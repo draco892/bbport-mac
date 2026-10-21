@@ -30,3 +30,6 @@ patches.json
 /docs/ISSUE_ACTION_PLAN_*.md
 # AMD FidelityFX DLLs (FSR 4.1.1 is built from the user's own): never in the repository
 *.dll
+
+# x86_64 deps directory
+deps-x86_64/

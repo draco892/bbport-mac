@@ -9,6 +9,11 @@ The game code runs as x86-64 under Rosetta 2. Vulkan runs on Metal through Kosmi
 MoltenVK can't run bbport, because it has no sparse buffers. You need the game folder: Bloodborne CUSA03173, merged with
 update 1.09, the one with `eboot.bin` in it.
 
+Work toward a CPU backend independent of Rosetta is tracked in the
+[P0 architecture inventory and baseline procedure](../../docs/CPU_BACKEND_P0.md).
+The [small AOT experiment](../../recompiler/README.md) runs without game files;
+it does not yet translate or run Bloodborne.
+
 ## One-time setup
 
 Clone the repository (the main branch is `macos-0.4`; `macos-native` has the experimental native

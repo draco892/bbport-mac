@@ -1,0 +1,15 @@
+{
+  "identity64": "4889f8c3",
+  "add64": "4889f84801f0c3",
+  "sub64": "4889f84829f0c3",
+  "xor64": "4889f84831f0c3",
+  "and64": "4889f84821f0c3",
+  "or64": "4889f84809f0c3",
+  "add32": "89f801f0c3",
+  "mixed_width": "4889f84801f031f0c3",
+  "shl_mask64": "4889f848c1e0ffc3",
+  "shr_mask32": "89f8c1e8ffc3",
+  "sar64": "4889f848c1f83fc3",
+  "sar32": "89f8c1f81fc3",
+  "shift_zero64": "4889f848c1e040c3"
+}

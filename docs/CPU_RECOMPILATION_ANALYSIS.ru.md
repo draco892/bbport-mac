@@ -1,5 +1,12 @@
 # Анализ CPU-бинарника Bloodborne и начало статической рекомпиляции
 
+> Checkout note (2026-10-22): the historical prototype sources described below
+> are not present in the available Git history. The current `recompiler/` is a
+> new, synthetic macOS P0 experiment, not that prototype. See
+> [its scope and reproduction instructions](../recompiler/README.md) and the
+> [current P0 inventory](CPU_BACKEND_P0.md). The historical reproduction command
+> below does not apply to the new experiment.
+
 Дата анализа: 2026-10-09. Целевые платформы: Linux x86-64 и Linux ARM64 (AArch64).
 Этот этап дал воспроизводимый анализ и AOT-прототип отдельных функций.
 Полная рекомпиляция игры и ARM64-лаунчер пока не реализованы.
