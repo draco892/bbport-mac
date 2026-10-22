@@ -188,3 +188,6 @@ can provide additional renderer evidence, but cannot replace gameplay validation
 
 P0 remains open until the missing game-dependent evidence is collected. Backend
 selection and coverage claims belong to P1; this experiment does not decide them.
+Independent CPU correctness work can continue without the game: the current
+[early P1 experiment](CPU_BACKEND_P1.md) checks bounded memory and forward control
+flow on synthetic functions. It does not satisfy the game-dependent P0 gates.
