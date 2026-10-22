@@ -1,0 +1,18 @@
+{
+  "leaf_add": {"address": 0, "parts": ["488b074801f0c3"]},
+  "leaf_sub": {"address": 256, "parts": ["488b074829f0c3"]},
+  "leaf_transform": {"address": 512, "parts": ["554889e54883ec10488975f8488b45f84801f04889c648894708c9c3"]},
+  "call_rax": {"address": 768, "parts": ["53488b4720", {"indirect": "rax", "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "5bc3"]},
+  "call_rbx": {"address": 1024, "parts": ["53488b47204889c3", {"indirect": "rbx", "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "5bc3"]},
+  "call_memory": {"address": 1280, "parts": ["53", {"indirect": 32, "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "5bc3"]},
+  "spilled_pointer": {"address": 1536, "parts": ["534883ec10488b472048894424084889f0488b442408", {"indirect": "rax", "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "4883c4105bc3"]},
+  "pointer_roundtrip": {"address": 1792, "parts": ["53488b472048894730", {"indirect": 48, "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "5bc3"]},
+  "two_indirect": {"address": 2048, "parts": ["53", {"indirect": 32, "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "48894710", {"indirect": 40, "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "5bc3"]},
+  "nested_indirect": {"address": 2304, "parts": ["53", {"call": "call_rax"}, "48894718", {"call": "call_memory"}, "5bc3"]},
+  "return_code_pointer": {"address": 2560, "parts": ["488b4720c3"]},
+  "frame_indirect": {"address": 2816, "parts": ["554889e54883ec10488975f8488b4720", {"indirect": "rax", "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "488b75f84801f0c9c3"]},
+  "call_return_pointer": {"address": 3072, "parts": ["53", {"indirect": 32, "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "488b4720488947385bc3"]},
+  "failure_chain": {"address": 3328, "parts": ["554889e54883ec10", {"call": "nested_indirect"}, "c9c3"]},
+  "call_memory_zero": {"address": 3584, "parts": ["53488b4720488907", {"indirect": 0, "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "5bc3"]},
+  "boundary_pointer": {"address": 3840, "parts": ["53488b472048894738", {"indirect": 56, "targets": ["leaf_add", "leaf_sub", "leaf_transform"]}, "5bc3"]}
+}

@@ -1,0 +1,19 @@
+{
+  "leaf_add": {"address": 0, "parts": ["488b074801f0c3"]},
+  "leaf_transform": {"address": 256, "parts": ["4889f04801f04889c648894708c3"]},
+  "preserve_rbx": {"address": 512, "parts": ["534889f3488b074801f0488947104889d85bc3"]},
+  "framed_leaf": {"address": 768, "parts": ["554889e54883ec10488975f8488b07488945f0488b75f0488b45f84801f0c9c3"]},
+  "rsp_roundtrip": {"address": 1024, "parts": ["4883ec1848893424488b074889442408488b3424488b4424084801f04883c418c3"]},
+  "push_pop_values": {"address": 1280, "parts": ["56488b07505e584801f0c3"]},
+  "call_once": {"address": 1536, "parts": ["53", {"call": "leaf_add"}, "5bc3"]},
+  "nested_calls": {"address": 1792, "parts": ["534889f3", {"call": "call_once"}, "488947184889de", {"call": "leaf_transform"}, "5bc3"]},
+  "frame_calls": {"address": 2048, "parts": ["554889e54883ec10488975f8", {"call": "leaf_transform"}, "488b75f8", {"call": "leaf_add"}, "c9c3"]},
+  "spill_between_calls": {"address": 2304, "parts": ["4883ec1848893424", {"call": "leaf_add"}, "4889442408", {"call": "leaf_transform"}, "488b7424084801f04883c418c3"]},
+  "nested_frames": {"address": 2560, "parts": ["554889e5534883ec084889f3", {"call": "frame_calls"}, "4889de", {"call": "preserve_rbx"}, "4883c4085bc9c3"]},
+  "reallocate": {"address": 2816, "parts": ["4883ec1048893424488b04244883c4105058c3"]},
+  "forward_call": {"address": 3072, "parts": ["53", {"call": "late_leaf"}, "5bc3"]},
+  "late_leaf": {"address": 3328, "parts": ["488b074829f0c3"]},
+  "large_frame_call": {"address": 3584, "parts": ["4883ec784889742470", {"call": "leaf_add"}, "488b7424704801f04883c478c3"]},
+  "saved_rax_call": {"address": 3840, "parts": ["4883ec18488b074889442410", {"call": "leaf_transform"}, "488b4424104801f04883c418c3"]},
+  "framed_callee": {"address": 4096, "parts": ["53", {"call": "framed_leaf"}, "5bc3"]}
+}

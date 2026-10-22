@@ -98,3 +98,108 @@ general x86 decoder, stack/call translator or concurrency/memory-ordering test.
 The subset and known function boundaries are supplied explicitly. No game
 coverage, runtime compatibility or speed improvement is established. Remaining
 P1 work is tracked in [`CPU_BACKEND_P1.md`](../docs/CPU_BACKEND_P1.md).
+
+## Bounded stacks and direct calls (early P1 validation)
+
+```sh
+python3 recompiler/run_stack.py
+python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
+```
+
+This separate experiment adds an explicit CPU state (RAX, RSI, RBX, RBP and a stack
+offset), a 512-byte translated stack and direct calls among known synthetic
+functions. It reuses the memory decoder's instruction subset through a decoder
+extension, without changing the earlier memory/branch contract.
+
+The whitelist supports 64-bit PUSH/POP, aligned positive imm8 SUB/ADD RSP,
+MOV RBP,RSP, RSP/RBP-relative 64-bit local slots, LEAVE and direct rel32 CALL/RET.
+Each function must restore its stack depth and RBX/RBP on every return. Local
+frames are bounded to 128 bytes, calls require 16-byte pre-call alignment and an
+acyclic call graph is checked against the total stack capacity. Reads from
+uninitialized or deallocated slots and accesses to protected return-address slots
+are rejected. Frame-pointer values cannot escape into scalar outputs or memory.
+
+The x86 reference executes original CALL/RET instructions on the real host stack.
+An assembly bridge seeds RBX/RBP and records RAX, RSI, RBX, RBP and the actual RSP
+delta after return. AOT functions receive explicit guest state and use native,
+non-inlined LLVM calls. CALL writes a synthetic return token to the translated
+stack; RET checks it and restores the stack offset. Runtime guards also check
+stack bounds/alignment and callee-saved register restoration.
+
+The harness compares **25,636 register/memory/stack-balance snapshots per AOT
+backend**, covering 17 functions and 1,508 input pairs, with zero mismatches on
+physical Apple Silicon. Cases include nested and repeated calls, forward and
+backward rel32 destinations, saved scalar values across calls, frame-pointer
+prologues/epilogues and stack allocation reuse. Both memory guard regions are
+checked for all runs; translated stack guards are checked for AOT runs. The
+original host stack is checked through its RSP delta and ABI register snapshot.
+
+Artifacts under `out/recompiler-stack/` include the resolved original module
+bytes/offsets, assembly bridge, generated IR, harness, exact inputs, result files,
+build logs and verification report. The report records analyzed stack requirements
+and source hashes. `stack_fixtures.json` supplies exact function boundaries and
+CALL targets; the fixture assembler only resolves these explicit CALL tokens.
+
+This remains a synthetic straight-line experiment. It does not combine arbitrary
+conditional CFGs with calls, resolve indirect targets or callbacks, or support
+recursion, red-zone accesses, escaped stack addresses, stack arguments, exceptions
+or a full ABI. Translated RSP is an offset, not the game's virtual stack address;
+return tokens are synthetic code offsets. Dead stack bytes, native return
+addresses and transient frame-pointer values are **not** compared across
+architectures. No game code is executed and no full backend has been selected.
+
+## Guest code registry and indirect calls (early P1 validation)
+
+```sh
+python3 recompiler/run_indirect.py
+python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
+```
+
+This experiment reuses the explicit stack/state model and adds CALL through RAX,
+RBX and bounded guest memory operands. `indirect_fixtures.json` declares possible
+callees for each indirect site. The combined direct/indirect call graph is checked
+for cycles and worst-case stack requirements before emitting code. The original
+stack-only mode still rejects indirect instructions.
+
+The x86 reference maps a synthetic immutable code image at guest address
+`0x200000000` (above 4 GiB), then executes the original bytes with real indirect
+CALLs. Mapping uses a hint and verifies the returned address; it never overwrites
+an occupied mapping. AOT does not execute or map those bytes. Code pointers kept
+in guest registers, spills, returned values and guest memory remain those same
+64-bit guest addresses. `resolve_guest_code` maps exact registered entries to
+separate native LLVM functions; guest integers are never cast into callable native
+pointers in the translated code. All registered entries are checked to resolve
+to distinct native addresses, and interior/null addresses must not resolve.
+
+After lookup, the caller checks the per-site allowed target set. An unregistered
+address returns status 1; a registered entry outside that set returns status 2.
+The faulting guest value is recorded and the error propagates through native
+callers, restoring their modeled SP/RBX/RBP. RAX/RSI are unspecified on failure.
+This cleanup does not roll back guest writes or implement exceptions/unwinding.
+Unexpected stack/state invariant violations still use the internal trap guards.
+
+Validation covers **16 functions, 11 indirect sites, 740 scalar input pairs and
+all 9 ordered pairs of three callee choices**: 106,560 register/memory snapshots
+per AOT backend, with zero mismatches on Apple Silicon. It includes pointers
+spilled to the stack, pointers copied through guest memory and returned as data,
+two indirect calls, nested direct/indirect calls, RBP frames, `[rdi]` calls and the
+last valid 8-byte pointer slot in the 64-byte region.
+
+Each AOT backend also passes 10 negative invocations: null, unregistered,
+interior, registered-but-disallowed and actual native-function-pointer values,
+through both a root indirect caller and a nested call chain. Those roots have no
+guest writes before failure; tests verify unchanged memory, stack balance and
+callee-saved registers. Invalid native/x86 destinations are not executed by the
+reference. They are tested against the explicit AOT error contract instead.
+
+Artifacts under `out/recompiler-indirect/` include original image bytes, the
+guest-address registry, target-set manifest, LLVM IR, harness and bridge, inputs,
+result files, rejection logs and source-hashed `verification.json`. The previous
+stack/direct-call corpus still passes 25,636 comparisons per AOT backend.
+
+The registry is immutable and synthetic: no automatic target discovery, arbitrary
+interior entry points, module loading/unloading, code-cache invalidation or
+Rosetta-independent fallback has been implemented. Indirect jumps, host/guest
+callbacks, recursion and game execution remain out of scope. An address absent
+from the registry is rejected even if it could be a valid target in a larger
+program. This increment does not complete P1 or select the production backend.

@@ -23,7 +23,7 @@ class Instruction:
     condition: int = 0
 
 
-def decode(code):
+def decode(code, extra_decode=None):
     """Decode the whole fixture; reject unsupported or truncated encodings."""
     if not code or len(code) > 4096:
         raise ValueError('expected 1..4096 bytes of synthetic code')
@@ -47,11 +47,12 @@ def decode(code):
         (b'\x66\x89', 'store', 16), (b'\x88', 'store', 8),
     ]
     while pc < len(code):
-        current = None
-        for encoding, (op, width, source) in registers.items():
-            if code.startswith(encoding, pc):
-                current = Instruction(pc, len(encoding), op, width, source)
-                break
+        current = extra_decode(code, pc) if extra_decode else None
+        if current is None:
+            for encoding, (op, width, source) in registers.items():
+                if code.startswith(encoding, pc):
+                    current = Instruction(pc, len(encoding), op, width, source)
+                    break
         if current is None:
             for encoding, op, width in memory:
                 if not code.startswith(encoding, pc):
