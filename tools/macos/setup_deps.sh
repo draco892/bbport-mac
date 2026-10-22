@@ -31,7 +31,10 @@ step "Checks"
 [[ $(uname -s) == Darwin ]] || die "run this on the Mac"
 # KosmicKrisp, the only Vulkan driver that runs bbport on the Mac, needs macOS 26.
 (( $(sw_vers -productVersion | cut -d. -f1) >= 26 )) || die "macOS 26 or later required (this Mac: $(sw_vers -productVersion))"
-arch -x86_64 /usr/bin/true 2>/dev/null || die "Rosetta 2 missing: softwareupdate --install-rosetta --agree-to-license"
+# Native dependencies do not execute x86 code. Keep this check for the x86 build only.
+if [[ $ARCH == x86_64 ]]; then
+    arch -x86_64 /usr/bin/true 2>/dev/null || die "Rosetta 2 missing: softwareupdate --install-rosetta --agree-to-license"
+fi
 xcrun --find clang >/dev/null 2>&1 || die "Command Line Tools missing: xcode-select --install"
 BREW=$(command -v brew || true)
 [[ -z $BREW && -x /opt/homebrew/bin/brew ]] && BREW=/opt/homebrew/bin/brew
@@ -137,7 +140,8 @@ step "FFmpeg (decoders the game's movies need; $ARCH)"
 FF_TAG=n9.0.2 FF_REV=946fcce07b6dcd0331c8cc609192aeff5e1924f8
 echo "tag: $FF_TAG"
 if ! have lib/libavformat.dylib; then
-    fetch ffmpeg https://git.ffmpeg.org/ffmpeg.git "$FF_TAG" "$FF_REV"
+    # Official GitHub mirror; keep verifying the same pinned commit after cloning.
+    fetch ffmpeg https://github.com/FFmpeg/FFmpeg.git "$FF_TAG" "$FF_REV"
     cd "$SRC/ffmpeg"
     # Configure natively and cross-compile to x86-64 (the standard universal-build recipe);
     # arm64 is a plain native build.
@@ -276,6 +280,16 @@ if ! have lib/kosmickrisp/libvulkan_kosmickrisp.dylib || [[ $(cat "$kk_stamp" 2>
     cp "$kk/build-$ARCH/outputs/libvulkan_kosmickrisp.dylib" "$kk/build-$ARCH/outputs/kosmickrisp_mesa_icd.json" \
         "$PREFIX/lib/kosmickrisp/"
     echo "$KK_STAMP" > "$kk_stamp"
+fi
+
+# The wrapper's relocatable output can refer to the SDK's zlib through @rpath.
+# zlib lives in the system dyld cache, not in our prefix: use its actual install
+# name so a fresh process can load the driver without another library preloading it.
+# Apply this to cached drivers too; no Mesa rebuild is needed for a load-command fix.
+kk_driver=$PREFIX/lib/kosmickrisp/libvulkan_kosmickrisp.dylib
+if otool -L "$kk_driver" | awk '{print $1}' | grep -qx '@rpath/libz.1.dylib'; then
+    install_name_tool -change @rpath/libz.1.dylib /usr/lib/libz.1.dylib "$kk_driver"
+    codesign --force --sign - "$kk_driver"
 fi
 
 step "Verify: every library must contain $ARCH"

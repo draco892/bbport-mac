@@ -31,7 +31,7 @@ corpus or establish game compatibility.
 | Patches and hooks | `scripts/patches.py`, `src/probe.c`, `gpu/shim/bbport_frame_rate.cpp`: patches to x86 code and x86 hook stubs | Apply supported patches before translation; include patches in cache identity; translate or replace hook bridges |
 | Guest memory and GPU tracking | `src/runtime_memory.c`, `src/low_heap.c`, `gpu/shim/remote/`: fixed guest addresses, page protections, shared mappings and fault notifications | Preserve guest layouts; validate native page granularity, atomics, memory ordering and code-cache invalidation |
 | Native renderer | `tools/macos/build_gpu_native.sh`, `gpu/shim/remote/remote_front.cpp`, `docs/macos-native-gpu.md` | Reuse the separate ARM64 process/protocol; prove CPU/backend synchronization without relying on x86 ordering |
-| Build and dependencies | `tools/macos/build.sh`: explicit x86 compiler/CMake targets and `deps-x86_64`; `setup_deps.sh` checks Rosetta even for ARM64 dependencies | Separate host/guest architecture; build the CPU runtime and all loaded dependencies for ARM64; remove Rosetta checks only when no longer required |
+| Build and dependencies | `tools/macos/build.sh`: explicit x86 compiler/CMake targets and `deps-x86_64`; `setup_deps.sh` now checks Rosetta only for x86 dependencies | Separate host/guest architecture; build the CPU runtime and all loaded dependencies for ARM64 |
 | Launch and packaging | `tools/macos/run.sh`, `tools/macos/package.sh`, `launcher-macos/Sources/BBLauncher/Checks.swift`, `.github/workflows/release.yml` | Audit helpers, dynamic libraries, launcher checks and release jobs; prohibit an implicit Rosetta fallback in the finished ARM64 mode |
 
 This is a source audit, not proof that all dependencies have been found. The
@@ -63,9 +63,56 @@ Local audit results:
 
 - Apple Silicon, macOS 27.0.1; Apple clang 21.0.0; Rosetta reference execution works.
 - `out/bb-probe`, `out/bb-gpu-capabilities` and `out/gpu/libbbgpu.dylib` are x86-64.
-- `out/gpu-arm64/bb-gpu`, its GPU library and `deps-arm64/` are absent.
+- `out/gpu-arm64/bb-gpu`, its GPU library and `deps-arm64/` are now built and
+  verified as ARM64, including KosmicKrisp and its Vulkan loader.
+- The standalone ARM64 Vulkan submission/readback test passes on Apple M5 Pro.
 - The game is not currently available on this Mac (confirmed by the user).
 - No startup, frame-time, memory or gameplay stability results have been measured.
+
+## Native GPU checks without game files
+
+After building the native dependencies and GPU process (commands below):
+
+```sh
+python3 tools/macos/check_gpu_native.py
+# Native-only variant, suitable when Rosetta is unavailable:
+python3 tools/macos/check_gpu_native.py --skip-rosetta
+```
+
+The default suite includes an x86-64/Rosetta reference process communicating with
+an ARM64 memory-mirror test process. The native-only variant builds and executes
+only ARM64 checks. Both variants write fresh, separate output directories under
+`out/native-gpu-check/`, including build/test logs, artifact hashes/architectures
+and `verification.json`. An existing output directory is never overwritten.
+
+Validation on 2026-10-22:
+
+| Check | Result |
+| --- | --- |
+| Native GPU executable, GPU library, Vulkan loader and KosmicKrisp | ARM64 |
+| `bb-gpu` eager symbol binding and no-argument entry diagnostic | Passed; expected exit code 2 |
+| ARM64 channel ordering and synchronous calls | 200,000 ordered messages and 16,000 calls passed |
+| Shared mapping, aliases, remapping and write-fault recovery | Passed for x86→ARM64 and ARM64→ARM64 test processes; backend pages 16 KiB |
+| Native VMA table cache invalidation and concurrent access | Passed |
+| Native Vulkan command submission and 4,096-byte readback | Passed on Apple M5 Pro |
+| Repeated native GPU build with cached patched sources | Passed |
+
+The IPC checks exercise the shared protocol implementation in test processes;
+they do not launch the game or establish a working `bb-probe`/`bb-gpu` gameplay
+session. The Vulkan smoke test submits a buffer fill and checks the result; it
+does not validate game rendering, shader coverage, presentation or performance.
+
+Build fixes needed for this validation:
+
+- Native dependency setup no longer requires Rosetta. The FFmpeg download uses
+  its official GitHub mirror, retaining the same pinned commit verification.
+- Native GPU builds use an isolated FSR-Vulkan source copy keyed by the pinned
+  submodule commit and ordered patch hash. This avoids resetting local submodule
+  changes or failing when an earlier patch version is already present. CMake's
+  default source path remains the normal submodule for other builds.
+- KosmicKrisp's installed `@rpath/libz.1.dylib` load command is normalized to
+  `/usr/lib/libz.1.dylib` and the driver is ad-hoc signed again. The independent
+  smoke process exposed this missing-library problem during `vkCreateInstance`.
 
 ## Prepare CPU Rosetta + native GPU measurements
 
@@ -133,6 +180,7 @@ can provide additional renderer evidence, but cannot replace gameplay validation
 - [x] A small reproducible AOT experiment, independent from the missing historical one.
 - [x] Differential execution of that experiment on physical Apple Silicon.
 - [x] Baseline manifest collector and a repeatable measurement protocol.
+- [x] Native GPU build, loader, IPC and Vulkan readback checks without game files.
 - [ ] Inventory and hash the actual supported game and required PS4 modules.
 - [ ] Recover/recreate translation of selected **game functions**, beyond synthetic leaves.
 - [ ] Build and verify the CPU Rosetta + native GPU reference configuration.

@@ -14,6 +14,20 @@ Work toward a CPU backend independent of Rosetta is tracked in the
 The [small AOT experiment](../../recompiler/README.md) runs without game files;
 it does not yet translate or run Bloodborne.
 
+To build and check the separate native GPU process without the game:
+
+```sh
+BB_ARCH=arm64 bash tools/macos/setup_deps.sh
+bash tools/macos/build_gpu_native.sh
+python3 tools/macos/check_gpu_native.py
+```
+
+The checker records loading, IPC and Vulkan readback results under
+`out/native-gpu-check/`. Add `--skip-rosetta` for only ARM64 checks; the default
+also checks the x86-to-ARM64 reference pairing. Native GPU builds prepare an
+isolated copy of the pinned FSR-Vulkan sources and current port patches under
+`out/`, preserving the submodule's existing working tree.
+
 ## One-time setup
 
 Clone the repository (the main branch is `macos-0.4`; `macos-native` has the experimental native

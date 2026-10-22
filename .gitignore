@@ -33,3 +33,4 @@ patches.json
 
 # x86_64 deps directory
 deps-x86_64/
+deps-arm64/

@@ -18,16 +18,32 @@ mkdir -p out
 if [[ ! -f gpu/third_party/fsr-vulkan/CMakeLists.txt || ! -f gpu/third_party/imgui/imgui.h ]]; then
     git submodule update --init --recursive
 fi
-for patch in gpu/patches/fsr-vulkan/*.patch; do
-    if ! git -C gpu/third_party/fsr-vulkan apply --reverse --check "$PWD/$patch" 2>/dev/null; then
-        git -C gpu/third_party/fsr-vulkan apply "$PWD/$patch"
-    fi
-done
+# Earlier versions of the port may already have patched the submodule. Build from
+# an isolated copy of the pinned commit so neither old patches nor local edits
+# need to be reset. The commit and ordered patch contents identify the copy.
+fsr_rev=$(git rev-parse HEAD:gpu/third_party/fsr-vulkan)
+fsr_patch_hash=$(cat gpu/patches/fsr-vulkan/*.patch | shasum -a 256 | cut -d' ' -f1)
+fsr_parent=$PWD/out/fsr-vulkan-arm64
+fsr_source=$fsr_parent/$fsr_rev-$fsr_patch_hash
+if [[ ! -f $fsr_source/.bbport-patches ]]; then
+    mkdir -p "$fsr_parent"
+    fsr_temp=$(mktemp -d "$fsr_parent/source.XXXXXX")
+    git -C gpu/third_party/fsr-vulkan archive "$fsr_rev" | tar -x -C "$fsr_temp"
+    # A private repository makes git apply resolve paths against this copy.
+    git -C "$fsr_temp" init -q
+    for patch in gpu/patches/fsr-vulkan/*.patch; do
+        git -C "$fsr_temp" apply "$PWD/$patch"
+    done
+    printf '%s %s\n' "$fsr_rev" "$fsr_patch_hash" > "$fsr_temp/.bbport-patches"
+    mv "$fsr_temp" "$fsr_source"
+fi
+echo "FSR-Vulkan: isolated source $fsr_source"
 
 echo "=== GPU library (arm64)"
 cmake -S gpu -B out/gpu-arm64 -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_SYSTEM_PROCESSOR=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+    -DBB_FSR_VULKAN_SOURCE_DIR="$fsr_source" \
     -DCMAKE_PREFIX_PATH="$DEPS;$BREW_PREFIX" -DBB_LTO=OFF -DBB_PGO=off > out/gpu-arm64-configure.log 2>&1 ||
     { tail -40 out/gpu-arm64-configure.log >&2; echo "STOP: configure failed (out/gpu-arm64-configure.log)" >&2; exit 1; }
 if ! ninja -C out/gpu-arm64 -k 0 -j "$JOBS" bbgpu bb-gpu > out/gpu-arm64-build.log 2>&1; then

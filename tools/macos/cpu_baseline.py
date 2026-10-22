@@ -90,6 +90,11 @@ def main():
     if rosetta["exit_code"] != 0:
         missing.append("Rosetta unavailable for the reference CPU run")
     config = Path(os.environ.get("BB_CONFIG", str(ROOT / "bbport.ini"))).resolve()
+    cache = targets["gpu"][0].parent / "CMakeCache.txt"
+    fsr_key = "BB_FSR_VULKAN_SOURCE_DIR:PATH="
+    fsr_source = next((line[len(fsr_key):] for line in cache.read_text().splitlines()
+                       if line.startswith(fsr_key)), None) if cache.is_file() else None
+    fsr_stamp = Path(fsr_source) / ".bbport-patches" if fsr_source else None
     report = {
         "schema_version": 1, "collected_at_utc": timestamp.isoformat(),
         "measurement_status": "not_run",
@@ -104,6 +109,9 @@ def main():
                  "compiler": command("xcrun", "clang", "--version"), "python": platform.python_version(),
                  "rosetta_reference_check": rosetta},
         "artifacts": artifacts, "dependencies": dependencies, "game": game,
+        "native_gpu_build": {"cmake_cache": file_info(cache), "fsr_source": fsr_source,
+                             "fsr_patch_identity": fsr_stamp.read_text().strip()
+                             if fsr_stamp and fsr_stamp.is_file() else None},
         "config": {"identity": file_info(config), "content": config.read_text() if config.is_file() else None},
         "environment": {key: value for key, value in sorted(os.environ.items())
                         if key.startswith("BB_") or key in ("VK_DRIVER_FILES", "DYLD_LIBRARY_PATH")},

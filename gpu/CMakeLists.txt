@@ -107,7 +107,9 @@ add_subdirectory(third_party/sirit EXCLUDE_FROM_ALL)
 # bbport: FSR 3.1 temporal upscaling / frame generation, native Vulkan (MIT, FireBurn/FSR-Vulkan).
 set(FFX_VK_PORTABLE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(FFX_VK_PORTABLE_BUILD_PROBE OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/fsr-vulkan EXCLUDE_FROM_ALL)
+set(BB_FSR_VULKAN_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fsr-vulkan"
+    CACHE PATH "FSR-Vulkan source tree (optionally an isolated patched copy)")
+add_subdirectory("${BB_FSR_VULKAN_SOURCE_DIR}" third_party/fsr-vulkan EXCLUDE_FROM_ALL)
 
 # Host shaders -> headers: SPIR-V arrays from glslang, in bbgpu/shaders/.
 set(SHADER_INCLUDE ${CMAKE_CURRENT_BINARY_DIR}/include)
