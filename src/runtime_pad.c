@@ -723,7 +723,12 @@ int runtime_pad_prompt(const char *name, int prefer_mouse, char *label, int size
     for (int i=0;i<IN_COUNT;++i) if (!strcmp(name,input_names[i])) input=i;
     if (input<0) return 0;
     pthread_mutex_lock(&lock);
-    if (!bindings_ready) { load_bindings(); bindings_ready=1; }
+    if (!bindings_ready) {
+        load_bindings(); bindings_ready=1;
+        /* Prompts may initialize controls before sample_host. Publish the mouse
+         * setting here too, so the native window does not keep its default. */
+        bbgpu_mouse_look_enable(mouse_look);
+    }
     const int device=prompt_device;
     const Binding b=bindings[input];
     /* Circle has no key of its own: the way back in a game menu is Escape (Options' key). */

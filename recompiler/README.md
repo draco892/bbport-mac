@@ -238,4 +238,35 @@ Artifacts and source-hashed `verification.json` are under
 and error statuses. The experiment covers synchronous same-thread scalar calls;
 general host ABIs, asynchronous/cross-thread callbacks, module unloading,
 exceptions and game execution remain open. It does not complete P1 or select the
-production backend. SIMD/floating-point correctness is the next planned increment.
+production backend. The register-only SIMD/floating-point increment is described below.
+
+## Register-only SSE/SSE2 and floating point
+
+```sh
+python3 recompiler/run_simd.py
+python3 recompiler/run_simd.py --sanitize
+python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
+```
+
+This separate mode observes XMM0, XMM1 and masked MXCSR. It covers packed integer
+arithmetic/logic/comparisons/shifts, PSHUFD, register copies and scalar/packed
+binary32/binary64 add/subtract/multiply/divide/square root. It validates all four
+rounding modes and DAZ/FTZ combinations, exact NaN payloads, sticky exceptions,
+scalar upper-lane preservation, state guards and host FP environment isolation.
+
+Integer vectors lower directly to LLVM integer operations. FP uses the vendored,
+hash-checked Berkeley SoftFloat 3e `8086-SSE` subset and an integer-only adapter.
+No download or game files are needed. Rosetta is the development x86 oracle;
+the generated ARM64 executable executes natively.
+
+On physical Apple Silicon, **143 fixtures × 49,152 input states = 7,028,736 full
+state comparisons per AOT backend**, with zero differences. Additional checks
+cover 960 known answers per executable, 53,361 independently modeled integer
+snapshots, 858 invalid-mode rejections per AOT backend and 37 CPU static tests.
+The `--sanitize` option additionally executes the corpus with native UBSan.
+
+Artifacts, complete inputs, binary snapshots, LLVM IR, original bytes, build/run
+logs and source-hashed `verification.json` are retained in `out/recompiler-simd/`.
+This is a bounded register experiment, without guest memory, a complete CPU state,
+general SIMD coverage, unmasked traps, runtime integration or game execution.
+See [the exact contract and remaining boundaries](../docs/CPU_BACKEND_SIMD.md).

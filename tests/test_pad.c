@@ -4,11 +4,16 @@
 #include "../src/runtime_pad.c"
 
 static int capture;
+static int mouse_look_enabled=-1, mouse_look_enable_calls;
 int bbgpu_overlay_captures_input(void) { return capture; }
+const bool *bbgpu_keyboard_state(void) { static bool keys[SDL_SCANCODE_COUNT]; return keys; }
+void bbgpu_keyboard_take_latched(volatile uint8_t *latch, int count) { (void)latch; (void)count; }
+int bbgpu_pointer_wanted(void) { return 0; }
+int bbgpu_free_camera(void) { return 0; }
 void bbgpu_mouse_take(double *dx, double *dy, int *up, int *down) { *dx=*dy=0; *up=*down=0; }
 int bbgpu_mouse_captured(void) { return 0; }
 uint32_t bbgpu_mouse_buttons(void) { return 0; }
-void bbgpu_mouse_look_enable(int enabled) { (void)enabled; }
+void bbgpu_mouse_look_enable(int enabled) { mouse_look_enabled=enabled; ++mouse_look_enable_calls; }
 void bbgpu_mouse_capture(void) {}
 int bbgpu_camera_look(float yaw, float pitch) { (void)yaw; (void)pitch; return 0; }
 void bbgpu_filter_pad(uint32_t *buttons, const uint8_t *sticks) { (void)buttons; (void)sticks; }
@@ -39,7 +44,7 @@ int main(void) {
     assert(config_fd>=0);
     const char controls[]="upscaler=fsr3\npad.cross=b\npad.circle=a\npad.r2=rightshoulder\n"
                           "pad.r1=righttrigger\nkey.cross=X, Space\npad.bogus=a\n"
-                          "key.l3=Left Ctrl+C, Keypad +\n";
+                          "key.l3=Left Ctrl+C, Keypad +\nmouse_look=0\n";
     assert(write(config_fd,controls,sizeof(controls)-1)==(ssize_t)(sizeof(controls)-1));
     close(config_fd);
     setenv("BB_CONFIG",config,1);
@@ -64,10 +69,17 @@ int main(void) {
         keys[SDL_SCANCODE_LCTRL]=true;
         assert(key_down(keys,IN_L3) && !key_down(keys,IN_R3));
     }
+    /* Button prompts can load bindings before the first pad sample. The window
+     * must still receive mouse_look=0, or desktop motion rotates the camera. */
+    char prompt[64];
+    prompt_device=2;
+    assert(runtime_pad_prompt("cross",0,prompt,sizeof prompt)=='K');
+    assert(mouse_look_enabled==0 && mouse_look_enable_calls==1);
     assert(pad_init()==0 && pad_open(1,0,0,NULL)==1);
     PadData data;
     inject(path,"cross l3 touchpad_left");
     assert(pad_read_state(1,&data)==0);
+    assert(mouse_look_enabled==0 && mouse_look_enable_calls==1);
     assert((data.buttons & (BTN_CROSS|BTN_L3|BTN_TOUCHPAD))==(BTN_CROSS|BTN_L3|BTN_TOUCHPAD));
     /* A new touch gets a new id (1..127), as from a DualShock 4: the game ignores id 0. */
     assert(data.touch_count==1 && data.touches[0].x==480 && data.touches[0].y==471 && data.touches[0].id==1);
@@ -149,5 +161,10 @@ int main(void) {
     assert(!mouse_key_down(MOUSE_WHEEL_DOWN));
     mouse_wheel_step(1140000,0,0);
     assert(mouse_key_down(MOUSE_WHEEL_DOWN) && wheel_pending[1]==0);
+    unsetenv("BB_CONFIG");
+    bindings_ready=0;
+    prompt_device=2;
+    assert(runtime_pad_prompt("cross",0,prompt,sizeof prompt)=='K');
+    assert(mouse_look_enabled==1 && mouse_look_enable_calls==2);
     puts("PASS: pad ABI, debug camera chord, left/right clicks, SDL touch coordinates, overlay capture, controls, mouse");
 }

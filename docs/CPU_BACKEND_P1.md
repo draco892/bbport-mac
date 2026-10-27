@@ -1,8 +1,12 @@
 # ARM64 CPU backend: early P1 correctness validation
 
 Issue: [#9](https://github.com/bmy/bbport-mac/issues/9).
-Updated: 2026-10-22. **P1 is not complete; CPU backend selection remains open.**
-The game-dependent P0 baseline also remains open because the game is unavailable.
+Updated: 2026-10-27. **P1 is not complete; CPU backend selection remains open.**
+The game-dependent P0 baseline remains open: the game is now available and the
+CPU Rosetta + native GPU reference launches and initial fixed-camera clinic
+measurements are retained, but extended gameplay measurements and representative
+game-function translation are pending. See the
+[2026-10-27 reference-run report](CPU_BASELINE_2026-10-27.md).
 
 ## Completed increment: bounded memory and forward control flow
 
@@ -72,18 +76,22 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [x] Synthetic synchronous scalar host/guest callbacks with bounded reentry.
 - [ ] General target discovery/resolution, indirect jumps and general callback ABI/lifecycle.
 - [ ] Full observable guest register/flag state, beyond the current contracts.
-- [ ] SIMD and floating-point semantics, rounding, NaNs and exceptional inputs.
+- [x] Bounded register-only SSE/SSE2 integer and FP validation: all rounding modes,
+  NaN payloads, masked exception flags, subnormals and all DAZ/FTZ modes.
+- [ ] General SIMD/FP coverage and integration with full guest state, including
+  remaining instructions, registers, conversions/comparisons and unmasked traps.
 - [ ] Atomics and an explicit strategy for x86 memory ordering on ARM64.
 - [ ] Exceptions, unwinding, non-local jumps and runtime fault integration.
 - [ ] Representative game/module functions and their instruction/control-flow coverage.
 - [ ] Comparison of execution strategies and an explicit CPU-backend decision,
   including a Rosetta-independent compatibility path for uncovered valid targets.
 
-The next CPU increment is SIMD and floating-point correctness validation, with
-an explicit contract for rounding and exceptional inputs. Extending this whitelist is useful for isolated
-correctness experiments; it is not a decision to build a complete x86 decoder or
-instruction-semantics library by hand. The existing native GPU process and shared
-protocol remain separate from this CPU translation work.
+The [register-only SIMD/FP increment](CPU_BACKEND_SIMD.md) now passes 7,028,736
+snapshots per AOT backend with zero differences, plus known-answer and rejection
+checks. The next work is broader instruction coverage and integration with the
+guest state; this does not complete P1. The whitelist remains an isolated
+experiment, not a decision to hand-build a complete x86 decoder/semantics library.
+The existing native GPU process and shared protocol remain separate work.
 
 ## Completed increment: bounded stacks and direct calls
 

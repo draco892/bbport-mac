@@ -1,5 +1,18 @@
 # Нативный порт Bloodborne: что сделано и что дальше
 
+## macOS TODO — 2026-10-27
+
+- [ ] Improve gameplay performance on Apple Silicon with the Rosetta CPU +
+  native ARM64 GPU pairing. The user reports visibly slow gameplay; initial
+  2560×1440 / FSR 3.1 Native AA / Highest-detail observations in the clinic show
+  roughly 20–40 FPS, depending on view and activity. These are provisional
+  observations, not a completed fixed-scene benchmark. Finish the
+  [reference baseline](CPU_BASELINE_2026-10-27.md), then profile CPU translation,
+  GPU command preparation/recording, IPC and memory synchronization, shader
+  compilation and GPU/upscaler cost. Compare controlled A/B changes in the same
+  scenes and report median/p95/p99 frame times and stutters; the target is stable
+  60 FPS with documented settings, without visual or synchronization regressions.
+
 Основной текст — состояние на 2026-09-26; ниже первым разделом — что изменилось к 30.09.
 Самый подробный срез: [CURRENT_STATUS_2026-09-29.md](history/CURRENT_STATUS_2026-09-29.md).
 Отчёт о работе 30.09–01.10 (конвейер GPU, апскейлер, падение, лаунчер, AppImage):

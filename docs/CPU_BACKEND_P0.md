@@ -1,7 +1,9 @@
 # ARM64 CPU backend: P0 baseline and architecture inventory
 
 Issue: [#9](https://github.com/bmy/bbport-mac/issues/9).
-Audit date: 2026-10-22. P0 is **in progress**; game benchmarks have not been run.
+Audit date: 2026-10-22; reference launch checked on 2026-10-27. P0 is **in
+progress**; an initial fixed-camera clinic baseline is collected, while the
+planned extended gameplay benchmarks remain open.
 
 ## Findings and scope
 
@@ -66,8 +68,16 @@ Local audit results:
 - `out/gpu-arm64/bb-gpu`, its GPU library and `deps-arm64/` are now built and
   verified as ARM64, including KosmicKrisp and its Vulkan loader.
 - The standalone ARM64 Vulkan submission/readback test passes on Apple M5 Pro.
-- The game is not currently available on this Mac (confirmed by the user).
-- No startup, frame-time, memory or gameplay stability results have been measured.
+- The game became available on 2026-10-27: CUSA03173, update 01.09, with the
+  supported loaded-image hash. Both required PS4 modules parse successfully;
+  all 26,913 `.dcx` files pass the existing decompression checker.
+- A real-game reference launch now verifies an x86-64/Rosetta CPU process paired
+  with the ARM64 GPU process, module initialization and frame production. Startup
+  frame data and per-process RSS were collected in an isolated profile. A
+  separate live retry has user confirmation of a visible game/menu window. Title
+  screen timing bounds and three fixed-camera clinic intervals were subsequently
+  collected; the extended Yharnam/Great Bridge comparison remains pending. See
+  [the reference-run report](CPU_BASELINE_2026-10-27.md).
 
 ## Native GPU checks without game files
 
@@ -181,10 +191,17 @@ can provide additional renderer evidence, but cannot replace gameplay validation
 - [x] Differential execution of that experiment on physical Apple Silicon.
 - [x] Baseline manifest collector and a repeatable measurement protocol.
 - [x] Native GPU build, loader, IPC and Vulkan readback checks without game files.
-- [ ] Inventory and hash the actual supported game and required PS4 modules.
+- [x] Inventory and hash the actual supported game and required PS4 modules.
 - [ ] Recover/recreate translation of selected **game functions**, beyond synthetic leaves.
-- [ ] Build and verify the CPU Rosetta + native GPU reference configuration.
+- [x] Build and verify the CPU Rosetta + native GPU reference configuration
+  (real-game module initialization, live process architectures and frame
+  production, plus user-confirmed visible startup in a separate retry;
+  detailed visual/gameplay validation remains open).
 - [ ] Record startup, frame-time, memory and stability measurements for fixed scenes.
+  Initial clinic measurements are now retained (three 60-second intervals,
+  per-process RSS, visual load observations and a 17-minute orderly-ending run);
+  the planned Great Bridge, busy Central Yharnam and streaming-route repeats
+  remain outstanding.
 
 P0 remains open until the missing game-dependent evidence is collected. Backend
 selection and coverage claims belong to P1; this experiment does not decide them.

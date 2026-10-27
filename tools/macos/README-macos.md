@@ -57,6 +57,23 @@ bash tools/macos/build.sh            # the port: out/bb-probe and out/gpu/libbbg
 bash tools/macos/build_launcher.sh   # the launcher app: out/bbport.app
 ```
 
+For a clean engine rebuild with the existing dependencies, remove only compiler
+outputs (keep `out/cpu-baseline/`, saves, game files and dependency prefixes):
+
+```sh
+rm -rf out/gpu out/gpu-arm64 out/atrac9 launcher-macos/.build
+rm -f out/bb-probe out/bb-gpu-capabilities out/libatrac9.a
+bash tools/macos/build.sh
+bash tools/macos/build_launcher.sh
+```
+
+Both GPU architectures use an isolated copy of the pinned FSR-Vulkan sources and
+port patches, preserving existing submodule modifications. If `deps-arm64/env.sh`
+exists, `build.sh` also builds the separate native GPU process. Run that pairing
+with `BB_NATIVE_GPU=1 BB_GAME_DIR="$PWD/asset/CUSA03173" bash tools/macos/run.sh`.
+The CPU game process still uses Rosetta; the synthetic CPU experiments, including
+[SIMD/FP validation](../../docs/CPU_BACKEND_SIMD.md), are not yet a game backend.
+
 To update later, press **Update** in the app, or run `bash tools/macos/update.sh`: it fetches
 the latest version from GitHub and rebuilds only what changed (dependencies, the port, the app).
 `bash tools/macos/update.sh <branch>` switches to another branch; in the app, set the branch in
