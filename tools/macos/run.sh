@@ -32,7 +32,7 @@ else
     export BB_PROBE="$PWD/out/bb-probe"
     data=${BB_DATA_DIR:-.}
 fi
-: "${BB_GAME_DIR:?set BB_GAME_DIR to the merged 1.09 game folder}"
+export BB_GAME_DIR=${BB_GAME_DIR:-$PWD/asset/CUSA03173}
 export BB_PREBUILT=1
 # No online play on the Mac yet (0.51's online module isn't built here): run.sh would otherwise
 # contact the community server with BB_ONLINE=1 and the game still play offline.

@@ -64,8 +64,8 @@ if [[ -z ${PYTHON:-} ]]; then
     fi
 fi
 if [[ -z ${PYTHON:-} ]]; then echo 'Install Python 3 or set PYTHON.' >&2; exit 1; fi
-# BB_GAME_DIR: the game's folder (eboot.bin, sce_module, ...); default next to this directory.
-game=${BB_GAME_DIR:-../CUSA03173}
+# BB_GAME_DIR: the game's folder (eboot.bin, sce_module, ...); default inside this checkout.
+game=${BB_GAME_DIR:-asset/CUSA03173}
 if [[ ! -f $game/eboot.bin ]]; then echo "No eboot.bin in $game (set BB_GAME_DIR)." >&2; exit 1; fi
 original_game=$game
 game=$("$PYTHON" scripts/mods.py "$game" --out "$out" \

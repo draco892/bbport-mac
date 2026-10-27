@@ -69,7 +69,8 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [x] Bounded synthetic stacks and direct calls/returns across known functions.
 - [ ] General guest stack addressing, stack arguments and non-linear CFGs with calls.
 - [x] Synthetic guest code-address registry and bounded indirect calls.
-- [ ] General target discovery/resolution, indirect jumps and host/guest callbacks.
+- [x] Synthetic synchronous scalar host/guest callbacks with bounded reentry.
+- [ ] General target discovery/resolution, indirect jumps and general callback ABI/lifecycle.
 - [ ] Full observable guest register/flag state, beyond the current contracts.
 - [ ] SIMD and floating-point semantics, rounding, NaNs and exceptional inputs.
 - [ ] Atomics and an explicit strategy for x86 memory ordering on ARM64.
@@ -78,8 +79,8 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [ ] Comparison of execution strategies and an explicit CPU-backend decision,
   including a Rosetta-independent compatibility path for uncovered valid targets.
 
-The next CPU increment is host/guest callback validation using the explicit
-guest-address registry. Extending this whitelist is useful for isolated
+The next CPU increment is SIMD and floating-point correctness validation, with
+an explicit contract for rounding and exceptional inputs. Extending this whitelist is useful for isolated
 correctness experiments; it is not a decision to build a complete x86 decoder or
 instruction-semantics library by hand. The existing native GPU process and shared
 protocol remain separate from this CPU translation work.
@@ -203,6 +204,69 @@ invalid targets in the x86 reference. Stack invariant corruption still traps.
 This is an immutable synthetic registry, not a recovered game CFG, real PRX loader
 or complete target resolver. Valid targets outside the declared registry are
 rejected; a compatibility fallback still needs design and validation. Indirect
-jumps, host/guest callbacks, dynamic code changes, general guest stack addresses
+jumps, dynamic code changes, general guest stack addresses
 and combined conditional call CFGs remain unsupported. P0's missing game evidence
 and P1's remaining correctness/architecture gates remain open.
+
+## Completed increment: synchronous host/guest callbacks
+
+```sh
+python3 recompiler/run_callback.py
+python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
+```
+
+The callback experiment uses eight synthetic guest functions, six registered
+callback entries and one actual native C host import. The host invokes a guest
+callback through an opaque registration handle; guest code can call the C
+service, which can synchronously reenter a registered guest callback. Direct
+guest calls, an indirect guest call, local frames and repeated service calls
+exercise the same stack and address-resolution contracts as previous increments.
+
+The x86 reference patches a dedicated import thunk to an assembly ABI bridge
+leading to the native C service. The service calls original guest bytes through
+the original entry bridge. AOT guest functions call the C service directly, and
+host callback entry resolves the original guest identity through the immutable
+registry. The host import is excluded from that guest registry. Guest code
+addresses remain integers at `0x200000000` plus their module offsets.
+
+Each callback receives independent CPU state and a fresh guarded 512-byte AOT
+stack; guest memory is shared. A thread-local active context is saved/restored
+across synchronous entry and exit. Callback depth is explicitly bounded, while
+the direct/indirect guest call graph remains acyclic. Handles are scoped to a
+context and never reused within it; revoking and reusing a binding slot cannot
+reactivate the old handle. These bindings belong to the test harness, not a
+production loader or exported runtime API.
+
+| Evidence | Result |
+| --- | --- |
+| Synthetic functions / callback entries / native imports | 8 / 6 / 1 |
+| Scalar inputs | 484 boundary pairs + 256 seeded random pairs |
+| Callback combinations | 6 outer × 3 inner × 2 service policies × 2 repeated invocations |
+| Original x86 vs explicit-state AOT x86-64 | 53,280 snapshots; zero differences |
+| Original x86 vs explicit-state AOT ARM64 | 53,280 snapshots; zero differences |
+| Rejection and recovery checks | 10 passed per AOT backend |
+| CPU static rejection tests, including previous contracts | 32 tests passed |
+| Previous indirect-call corpus | 106,560 snapshots per AOT backend; zero differences |
+
+Snapshots compare RAX/RSI/RBX/RBP, normalized SP delta, shared memory and its
+guards, a transition-trace hash, callback/service counts and peak callback depth.
+Independent count/depth assertions require the expected nested paths to execute.
+Both invocations reuse their registrations, context and shared memory. AOT stack
+guards and original x86 stack/register restoration are checked at every callback.
+Inputs, original image, bridges, generated IR, manifests, outputs, command logs
+and source-hashed verification are retained in `out/recompiler-callback/`.
+
+Negative checks reject null/interior/native-pointer targets, a known guest entry
+outside the callback whitelist and the host import address. They also cover a
+revoked handle, a stale handle after slot reuse, a fresh binding after the handled
+error, bounded reentry failure through a guest-call chain and successful reuse
+after clearing that diagnostic. Status 1/2 retains the lookup/allowlist contract;
+3 means invalid registration handle, 4 means callback depth limit and 5 means
+bridge invariant failure. Reentry failure restores callback context, SP/RBX/RBP
+and leaves memory unchanged for the tested path. This is not general rollback or
+exception handling. Invalid original x86 calls are not executed.
+
+This validates a synchronous same-thread scalar experiment. It does not support
+arbitrary host ABIs, stack arguments, asynchronous/cross-thread callbacks, module
+unloading, non-local exits or a complete guest register/flag state. No game code
+is exercised, and neither P1 nor the game-dependent P0 gates are complete.

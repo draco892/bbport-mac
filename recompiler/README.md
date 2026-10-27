@@ -200,6 +200,42 @@ stack/direct-call corpus still passes 25,636 comparisons per AOT backend.
 The registry is immutable and synthetic: no automatic target discovery, arbitrary
 interior entry points, module loading/unloading, code-cache invalidation or
 Rosetta-independent fallback has been implemented. Indirect jumps, host/guest
-callbacks, recursion and game execution remain out of scope. An address absent
+recursion and game execution remain out of scope for this corpus. An address absent
 from the registry is rejected even if it could be a valid target in a larger
 program. This increment does not complete P1 or select the production backend.
+
+## Synchronous host/guest callbacks (early P1 validation)
+
+```sh
+python3 recompiler/run_callback.py
+python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
+```
+
+This experiment adds a real native C host service and synchronous guest callback
+entry through the immutable guest-address registry. Eight synthetic guest
+functions include six callback entries. Original x86 code reaches C through an
+import thunk and assembly ABI bridge; AOT code calls the same C service directly.
+The service can reenter a registered guest callback with independent CPU state
+and a fresh guarded 512-byte AOT stack, sharing the guest memory region.
+
+Context-scoped handles support registration and revocation without reusing old
+handle values. Thread-local active context is restored across nested calls;
+callback depth is explicitly bounded. The host import is excluded from the guest
+registry, and the original guest call graph still must be acyclic.
+
+Validation on Apple Silicon compares **53,280 snapshots per AOT backend**, with
+zero mismatches: 740 scalar pairs, six outer callbacks, three inner callbacks,
+two service policies and two invocations on the same bindings/context/memory.
+Snapshots cover register state, stack balance, memory guards, transition-trace
+hashes, callback/service counts and peak depth. Independent count assertions
+ensure nested transitions actually execute. Each AOT backend passes 10 additional
+rejection/recovery checks covering invalid targets, revoked/stale handles, slot
+reuse, bounded reentry failure and a successful call after handling the error.
+The CPU static rejection suite now contains 32 passing tests.
+
+Artifacts and source-hashed `verification.json` are under
+`out/recompiler-callback/`. See `docs/CPU_BACKEND_P1.md` for the precise contract
+and error statuses. The experiment covers synchronous same-thread scalar calls;
+general host ABIs, asynchronous/cross-thread callbacks, module unloading,
+exceptions and game execution remain open. It does not complete P1 or select the
+production backend. SIMD/floating-point correctness is the next planned increment.

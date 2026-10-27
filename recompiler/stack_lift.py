@@ -87,7 +87,7 @@ def decode_extra(code, pc):
     return None
 
 
-def analyze(functions, *, indirect_targets=None, decoder_extra=None):
+def analyze(functions, *, indirect_targets=None, decoder_extra=None, host_imports=None):
     if not functions:
         raise ValueError('empty function map')
     addresses, decoded = {}, {}
@@ -104,12 +104,24 @@ def analyze(functions, *, indirect_targets=None, decoder_extra=None):
     spans = sorted((f['address'], f['address'] + len(f['code'])) for f in functions.values())
     if any(right[0] < left[1] for left, right in zip(spans, spans[1:])):
         raise ValueError('overlapping functions')
+    host_addresses = {}
+    for symbol, address in (host_imports or {}).items():
+        if not symbol.isidentifier() or not symbol.isascii() or symbol in functions:
+            raise ValueError('invalid or conflicting host import name')
+        if type(address) is not int or not 0 <= address < (1 << 31):
+            raise ValueError('invalid host import address')
+        if (address in host_addresses or any(address < end and address + 12 > begin for begin, end in spans)
+                or any(abs(address - other) < 12 for other in host_addresses)):
+            raise ValueError('overlapping host import thunk')
+        host_addresses[address] = symbol
+    if host_addresses and indirect_targets is None:
+        raise ValueError('host imports require controlled-error CPU state')
     analyses = {}
     used_indirect_sites = set()
     for name, instructions in decoded.items():
         regs = {'rax': None, 'b': 'value', 'rbx': 'entry_rbx', 'rbp': 'entry_rbp'}
         sp, minimum = 0, 0
-        slots, locations, calls, indirect_calls = {}, {}, {}, {}
+        slots, locations, calls, indirect_calls, host_calls = {}, {}, {}, {}, {}
 
         def read(reg):
             value = regs[reg]
@@ -186,11 +198,14 @@ def analyze(functions, *, indirect_targets=None, decoder_extra=None):
                 trim()
             elif ins.op == 'call':
                 target = functions[name]['address'] + ins.target
-                if target not in addresses:
+                if target not in addresses and target not in host_addresses:
                     raise ValueError(f'{name}: call target is not a known function entry')
                 if sp % 16 != 8:
                     raise ValueError(f'{name}: stack is not 16-byte aligned before CALL')
-                calls[ins.pc] = (addresses[target], sp)
+                if target in host_addresses:
+                    host_calls[ins.pc] = (host_addresses[target], sp)
+                else:
+                    calls[ins.pc] = (addresses[target], sp)
                 regs['rax'] = regs['b'] = 'value'
             elif ins.op == 'indirect_call':
                 if indirect_targets is None:
@@ -221,7 +236,8 @@ def analyze(functions, *, indirect_targets=None, decoder_extra=None):
         if instructions[-1].op != 'ret':
             raise ValueError(f'{name}: missing RET')
         analyses[name] = {'instructions': instructions, 'locations': locations,
-                          'calls': calls, 'indirect_calls': indirect_calls, 'required_stack': -minimum}
+                          'calls': calls, 'indirect_calls': indirect_calls, 'host_calls': host_calls,
+                          'required_stack': max([-minimum] + [-depth + 8 for _, depth in host_calls.values()])}
     if indirect_targets is not None and set(indirect_targets) != used_indirect_sites:
         raise ValueError('indirect target contract names a non-call site')
     visiting, completed = set(), set()
@@ -249,14 +265,17 @@ def analyze(functions, *, indirect_targets=None, decoder_extra=None):
     return analyses
 
 
-def lift_stack(functions, *, indirect_targets=None, decoder_extra=None, code_base=0):
-    analyses = analyze(functions, indirect_targets=indirect_targets, decoder_extra=decoder_extra)
+def lift_stack(functions, *, indirect_targets=None, decoder_extra=None, code_base=0, host_imports=None):
+    analyses = analyze(functions, indirect_targets=indirect_targets, decoder_extra=decoder_extra,
+                       host_imports=host_imports)
     indirect_mode = indirect_targets is not None
     if not isinstance(code_base, int) or not 0 <= code_base <= (1 << 64) - 1 - max(
-            f['address'] + len(f['code']) for f in functions.values()):
+            [f['address'] + len(f['code']) for f in functions.values()]
+            + [address + 12 for address in (host_imports or {}).values()]):
         raise ValueError('invalid guest code base')
     state_fields = {**FIELDS, 'error': 5, 'fault_address': 6} if indirect_mode else FIELDS
     module = ['%CPU = type { ' + ', '.join(['i64'] * len(state_fields)) + ' }', 'declare void @llvm.trap()']
+    module.extend(f'declare void @{symbol}(ptr, ptr, ptr, i64)' for symbol in (host_imports or {}))
     if indirect_mode:
         resolver = ['define ptr @resolve_guest_code(i64 %address) noinline {', 'entry:',
                     '  switch i64 %address, label %unknown [']
@@ -341,8 +360,12 @@ def lift_stack(functions, *, indirect_targets=None, decoder_extra=None, code_bas
                 write('rbp', emit(f'ptrtoint ptr {stack_address(sp)} to i64'))
             elif ins.op in ('call', 'indirect_call'):
                 if ins.op == 'call':
-                    callee, depth = analysis['calls'][ins.pc]
-                    native = f'@translated_{callee}'
+                    if ins.pc in analysis['host_calls']:
+                        symbol, depth = analysis['host_calls'][ins.pc]
+                        native = f'@{symbol}'
+                    else:
+                        callee, depth = analysis['calls'][ins.pc]
+                        native = f'@translated_{callee}'
                 else:
                     options, depth = analysis['indirect_calls'][ins.pc]
                     if ins.base == 'guest':

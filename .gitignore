@@ -1,4 +1,6 @@
 out/
+/ISO/
+/asset/
 __pycache__/
 user/
 *.mp4

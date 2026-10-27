@@ -1,0 +1,10 @@
+{
+  "callback_add": {"address": 0, "parts": ["488b074801f0c3"]},
+  "callback_service": {"address": 256, "parts": ["53", {"call_host": "host_service"}, "488947105bc3"]},
+  "callback_frame": {"address": 512, "parts": ["554889e54883ec10488975f8", {"call_host": "host_service"}, "488b75f84801f0c9c3"]},
+  "callback_twice": {"address": 768, "parts": ["53", {"call_host": "host_service"}, "48894710", {"call_host": "host_service"}, "488947185bc3"]},
+  "callback_chain": {"address": 1024, "parts": ["53", {"call": "guest_helper"}, "488947185bc3"]},
+  "callback_indirect": {"address": 1280, "parts": ["53", {"call_host": "host_service"}, {"indirect": 48, "targets": ["guest_leaf"]}, "5bc3"]},
+  "guest_helper": {"address": 1536, "parts": ["53", {"call_host": "host_service"}, "5bc3"]},
+  "guest_leaf": {"address": 1792, "parts": ["488b074829f0c3"]}
+}
