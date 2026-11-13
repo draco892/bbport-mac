@@ -1,7 +1,7 @@
 # ARM64 CPU backend: early P1 correctness validation
 
 Issue: [#9](https://github.com/bmy/bbport-mac/issues/9).
-Updated: 2026-10-27. **P1 is not complete; CPU backend selection remains open.**
+Updated: 2026-11-13. **P1 is not complete; CPU backend selection remains open.**
 The game-dependent P0 baseline remains open: the game is now available and the
 CPU Rosetta + native GPU reference launches and initial fixed-camera clinic
 measurements are retained, but extended gameplay measurements and representative
@@ -75,7 +75,12 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [x] Synthetic guest code-address registry and bounded indirect calls.
 - [x] Synthetic synchronous scalar host/guest callbacks with bounded reentry.
 - [ ] General target discovery/resolution, indirect jumps and general callback ABI/lifecycle.
-- [ ] Full observable guest register/flag state, beyond the current contracts.
+- [x] Shared GPR/XMM/RIP/RFLAGS/MXCSR state layout, consumed by the SIMD experiment;
+  XMM0–XMM15 execute under the existing bounded instruction contract.
+- [x] Bounded 32/64-bit GPR arithmetic and explicit CF/PF/AF/ZF/SF/OF, including
+  ADC/SBB, INC/DEC carry preservation and all sixteen CMOVcc conditions in the common state.
+- [ ] Full observable guest register/flag execution semantics and migration of the
+  earlier memory/stack/callback contracts to that common state.
 - [x] Bounded register-only SSE/SSE2 integer and FP validation: all rounding modes,
   NaN payloads, masked exception flags, subnormals and all DAZ/FTZ modes.
 - [ ] General SIMD/FP coverage and integration with full guest state, including
@@ -86,10 +91,18 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [ ] Comparison of execution strategies and an explicit CPU-backend decision,
   including a Rosetta-independent compatibility path for uncovered valid targets.
 
-The [register-only SIMD/FP increment](CPU_BACKEND_SIMD.md) now passes 7,028,736
+The [register-only SIMD/FP increment](CPU_BACKEND_SIMD.md) now passes 53,040,000
 snapshots per AOT backend with zero differences, plus known-answer and rejection
-checks. The next work is broader instruction coverage and integration with the
-guest state; this does not complete P1. The whitelist remains an isolated
+checks. Saturating arithmetic, signed/unsigned packing, low/high unpacking and
+word multiply/multiply-add now include aliased operands and integer boundary
+corpora. Native host FPSR.QC preservation is checked with QC initially clear and
+set. The [common-state increment](CPU_STATE.md) now observes all sixteen XMM
+registers, including extended-register known answers and all register-copy pairs.
+SIMD preserves GPRs, RIP and RFLAGS. The [GPR/flag increment](CPU_BACKEND_GPR.md)
+now executes bounded scalar instructions in the same layout, passing 9,834,960
+complete snapshots per backend, including native UBSan. The next work is broader
+general-state semantics and integration of memory, calls and SIMD. This does not
+complete P1. The whitelist remains an isolated
 experiment, not a decision to hand-build a complete x86 decoder/semantics library.
 The existing native GPU process and shared protocol remain separate work.
 

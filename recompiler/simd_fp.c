@@ -4,6 +4,34 @@
 #include <stdint.h>
 #include "softfloat.h"
 
+/* Opaque calls surround all guest loads/stores in generated IR. This keeps the
+ * compiler from moving the vector computations beyond the save/restore pair.
+ * In particular LLVM can select ARM SQADD/UQADD, which set sticky FPSR.QC even
+ * though the corresponding SSE2 operations do not modify guest MXCSR. FPCR is
+ * never changed by this path; the harness checks it separately. */
+uint64_t bb_simd_host_save(void) {
+#if defined(__aarch64__)
+    uint64_t saved;
+    __asm__ volatile("mrs %0, fpsr" : "=r"(saved) :: "memory");
+    return saved;
+#elif defined(__x86_64__)
+    uint32_t saved;
+    __asm__ volatile("stmxcsr %0" : "=m"(saved) :: "memory");
+    return saved;
+#else
+#error unsupported SIMD experiment host
+#endif
+}
+
+void bb_simd_host_restore(uint64_t saved) {
+#if defined(__aarch64__)
+    __asm__ volatile("msr fpsr, %0" :: "r"(saved) : "memory");
+#else
+    uint32_t mxcsr = (uint32_t)saved;
+    __asm__ volatile("ldmxcsr %0" :: "m"(mxcsr) : "memory");
+#endif
+}
+
 static unsigned mxcsr_flags(unsigned flags) {
     return ((flags & softfloat_flag_invalid) ? 1u : 0u) |
            ((flags & softfloat_flag_infinite) ? 4u : 0u) |

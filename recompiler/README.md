@@ -248,8 +248,10 @@ python3 recompiler/run_simd.py --sanitize
 python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
 ```
 
-This separate mode observes XMM0, XMM1 and masked MXCSR. It covers packed integer
-arithmetic/logic/comparisons/shifts, PSHUFD, register copies and scalar/packed
+This separate mode uses the shared `BbCpuState` and observes XMM0–XMM15 and
+masked MXCSR, while preserving stored GPRs, RIP and RFLAGS. It covers packed integer
+arithmetic/logic/comparisons/shifts, saturation, signed/unsigned packing,
+low/high unpacking, word multiply/multiply-add, PSHUFD, register copies and scalar/packed
 binary32/binary64 add/subtract/multiply/divide/square root. It validates all four
 rounding modes and DAZ/FTZ combinations, exact NaN payloads, sticky exceptions,
 scalar upper-lane preservation, state guards and host FP environment isolation.
@@ -259,14 +261,39 @@ hash-checked Berkeley SoftFloat 3e `8086-SSE` subset and an integer-only adapter
 No download or game files are needed. Rosetta is the development x86 oracle;
 the generated ARM64 executable executes natively.
 
-On physical Apple Silicon, **143 fixtures × 49,152 input states = 7,028,736 full
+On physical Apple Silicon, **780 fixtures × 68,000 input states = 53,040,000 full
 state comparisons per AOT backend**, with zero differences. Additional checks
-cover 960 known answers per executable, 53,361 independently modeled integer
-snapshots, 858 invalid-mode rejections per AOT backend and 37 CPU static tests.
+cover 2,560 known answers per executable, 1,963,204 independently modeled integer
+snapshots, 4,680 invalid-mode rejections per AOT backend and 59 combined CPU static tests.
+The ARM harness checks preservation of FPSR.QC both initially clear and set;
+generated functions preserve host status around potentially saturating NEON code.
 The `--sanitize` option additionally executes the corpus with native UBSan.
 
 Artifacts, complete inputs, binary snapshots, LLVM IR, original bytes, build/run
 logs and source-hashed `verification.json` are retained in `out/recompiler-simd/`.
 This is a bounded register experiment, without guest memory, a complete CPU state,
 general SIMD coverage, unmasked traps, runtime integration or game execution.
-See [the exact contract and remaining boundaries](../docs/CPU_BACKEND_SIMD.md).
+See [the exact contract and remaining boundaries](../docs/CPU_BACKEND_SIMD.md)
+and [the common CPU-state layout and sixteen-register evidence](../docs/CPU_STATE.md).
+
+## Common-state GPR arithmetic and flags
+
+```sh
+python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
+python3 recompiler/run_gpr.py --sanitize
+```
+
+This mode executes 32/64-bit MOV, ADD/ADC, SUB/SBB, logical operations, CMP/TEST,
+INC/DEC and all sixteen CMOVcc conditions using the same `BbCpuState` as SIMD.
+All sixteen GPRs (including RSP as an integer) and the six arithmetic flags are
+observable; other state is preserved. Byte/word operations, memory, branches,
+calls and general flag semantics remain outside this bounded mode. Undefined
+logical AF is explicitly normalized rather than asserted as architectural output.
+
+The default corpus passes **1,720 fixtures × 5,718 states = 9,834,960 snapshots
+per AOT backend**, with zero differences, 22 explicit answers and 718,960
+independently modeled snapshots. Native ARM64 UBSan passes the same corpus.
+The combined CPU test suite passes 59 tests. Complete outputs with matching
+hashes are archived once, with a verified gzip round trip before removing raw
+copies; reproduction data and `verification.json` stay in `out/recompiler-gpr/`.
+See [the exact GPR/flag contract and oracle boundaries](../docs/CPU_BACKEND_GPR.md).

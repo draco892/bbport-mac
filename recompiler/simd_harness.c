@@ -5,14 +5,9 @@
 #include <stdio.h>
 #include <string.h>
 #include "simd_functions.h"
+#include "cpu_state_layout.h"
 
-typedef struct {
-    uint64_t xmm[2][2];
-    uint32_t mxcsr, status;
-    uint64_t reserved;
-} State;
-_Static_assert(sizeof(State) == 48 && offsetof(State, mxcsr) == 32 &&
-               offsetof(State, status) == 36, "guest-state layout");
+typedef BbCpuState State;
 typedef void (*Function)(State *);
 #define DECLARE(name) extern void name(State *);
 SIMD_FUNCTIONS(DECLARE)
@@ -49,11 +44,12 @@ int main(int argc, char **argv) {
 #if defined(__x86_64__)
     const HostEnvironment seeded = {0x7fa1, 0};
 #else
-    const HostEnvironment seeded = {0x400000, 0x15};
+    HostEnvironment seeded = {0x400000, 0x15};
 #endif
     write_host(seeded);
     State input;
     unsigned long count = 0;
+    unsigned long input_count = 0;
     const int negative = argc == 2 && !strcmp(argv[1], "--negative");
     if (argc > 1 && !negative) return 2;
     const uint32_t invalid[] = {0, 0x1f00, 0x1e80, 0x0f80, 0x11f80, 0x80001f80};
@@ -73,6 +69,11 @@ int main(int argc, char **argv) {
             if ((input.mxcsr & ~0xffffu) || (input.mxcsr & 0x1f80u) != 0x1f80u) return 4;
         }
         for (size_t f = 0; f < sizeof functions / sizeof functions[0]; ++f) {
+#if defined(__aarch64__)
+            /* Saturating NEON must neither leak QC nor clear a preexisting QC. */
+            seeded.b = UINT64_C(0x15) | ((uint64_t)((input_count + f) & 1) << 27);
+            write_host(seeded);
+#endif
             struct { uint64_t head[2]; State state; uint64_t tail[2]; } guarded = {
                 {UINT64_C(0x1020304050607080), UINT64_C(0xfedcba9876543210)}, input,
                 {UINT64_C(0x8877665544332211), UINT64_C(0x9876543210abcdef)}};
@@ -84,6 +85,9 @@ int main(int argc, char **argv) {
             assert(guarded.tail[0] == UINT64_C(0x8877665544332211));
             assert(guarded.tail[1] == UINT64_C(0x9876543210abcdef));
             assert(guarded.state.reserved == input.reserved);
+            assert(!memcmp(guarded.state.gpr, input.gpr, sizeof input.gpr));
+            assert(guarded.state.rip == input.rip);
+            assert(guarded.state.rflags == input.rflags);
             if (negative) {
                 State expected = input;
                 expected.status = 1;
@@ -94,6 +98,7 @@ int main(int argc, char **argv) {
             }
             ++count;
         }
+        ++input_count;
     }
     write_host(original);
     fprintf(stderr, "PASS: %lu %s snapshots; state guards and host FP environment preserved\n",

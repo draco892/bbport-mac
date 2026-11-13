@@ -12,15 +12,27 @@ import subprocess
 from pathlib import Path
 
 from simd_lift import FP_IDS, decode, declarations, lift
+from cpu_state import (ABI_VERSION, STATE, XMM_INDEX, MXCSR_INDEX, STATUS_INDEX,
+                       MXCSR_OFFSET, STATUS_OFFSET, OFFSETS, xmm_offset,
+                       c_layout_checks, expand_legacy)
 
 ROOT = Path(__file__).resolve().parent
 VENDOR = ROOT.parent / 'third_party/softfloat'
-STATE = struct.Struct('<4QIIQ')
+LEGACY_STATE = struct.Struct('<4QIIQ')
 SEED = 0xbb109
 
 
 def sha(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def load_fixtures():
+    fixtures = json.loads((ROOT / 'simd_fixtures.json').read_text())
+    extended = json.loads((ROOT / 'simd_register_fixtures.json').read_text())
+    if fixtures.keys() & extended.keys():
+        raise ValueError('duplicate SIMD fixture names')
+    return {**fixtures, **extended}
 
 
 def corpus(random_count):
@@ -51,6 +63,23 @@ def corpus(random_count):
     rng = random.Random(SEED)
     base.extend((tuple(rng.getrandbits(64) for _ in range(4)), None)
                 for _ in range(random_count))
+    # Cross every signed/unsigned saturation boundary, with distinct lanes so
+    # packing order and high-half interleaves cannot pass as broadcast copies.
+    for width in (8, 16, 32):
+        mask = (1 << width) - 1
+        edge = [0, 1, 2, (1 << (width - 1)) - 2, (1 << (width - 1)) - 1,
+                1 << (width - 1), (1 << (width - 1)) + 1, mask - 1, mask]
+        if width > 8:
+            edge += [127, 128, 255, 256]
+        if width == 32:
+            edge += [32767, 32768, 65535, 65536]
+        for i, a in enumerate(edge):
+            for j, b in enumerate(edge):
+                vectors = [sum((value if lane == 0 else edge[(offset + lane) % len(edge)])
+                               << (lane * width) for lane in range(128 // width))
+                           for value, offset in ((a, j), (b, i))]
+                base.append(((vectors[0] & ((1 << 64) - 1), vectors[0] >> 64,
+                              vectors[1] & ((1 << 64) - 1), vectors[1] >> 64), None))
     # Known results do not come from either the lifter or SoftFloat. The other
     # scalar destination lanes contain distinct, observable sentinel bits.
     for width, one, two, four, half_ulp, normal, largest, inf, sign, qnan in (
@@ -102,7 +131,7 @@ def corpus(random_count):
                     mxcsr = 0x1f80 | (rounding << 13) | denorm | sticky
                     state = (*words, mxcsr, 0xa5a5a5a5, 0x51a7e001cafef00d)
                     index = len(records)
-                    records.append(STATE.pack(*state))
+                    records.append(LEGACY_STATE.pack(*state))
                     descriptions.append({'base_id': base_id, 'xmm_words_hex': [f'{x:016x}' for x in words],
                                          'mxcsr': hex(mxcsr)})
                     if known:
@@ -120,19 +149,102 @@ def corpus(random_count):
                         expected[0] = (words[0] & ~mask) | result
                         expected[4] |= flags
                         expected[5] = 0
-                        known_records.append((index, known['function'], STATE.pack(*expected)))
-    return records, descriptions, known_records
+                        known_records.append((index, known['function'], LEGACY_STATE.pack(*expected)))
+    # Literal integer answers are separate from the executable Python model.
+    # Include all controls to prove these instructions leave MXCSR unchanged.
+    integer_known = [
+        ('sadd_sat8', 'b', [127, -128, 126, -127] * 4, [1, -1, 1, -1] * 4,
+         [127, -128, 127, -128] * 4),
+        ('uadd_sat8', 'B', [255, 254, 0, 128] * 4, [1, 1, 255, 128] * 4,
+         [255, 255, 255, 255] * 4),
+        ('ssub_sat16', 'h', [-32768, 32767, -1, 1] * 2, [1, -1, -1, 1] * 2,
+         [-32768, 32767, 0, 0] * 2),
+        ('usub_sat16', 'H', [0, 65535, 1, 32768] * 2, [1, 65535, 2, 1] * 2,
+         [0, 0, 0, 32767] * 2),
+        ('pack_unsigned16', 'h', [-32768, -1, 0, 127, 128, 255, 256, 32767],
+         [256, 255, 128, 127, 0, -1, -32768, 1],
+         [0, 0, 0, 127, 128, 255, 255, 255, 255, 255, 128, 127, 0, 0, 0, 1]),
+        ('pack_signed32', 'i', [-32769, -32768, 32767, 32768],
+         [-2147483648, 2147483647, -1, 0],
+         [-32768, -32768, 32767, 32767, -32768, 32767, -1, 0]),
+        ('madd16', 'h', [-32768] * 8, [-32768] * 8, [-2147483648] * 4),
+        ('mulhi_signed16', 'h', [-32768, -1, 32767, 256] * 2,
+         [32767, 1, 32767, 256] * 2, [-16384, -1, 16383, 1] * 2),
+        ('mulhi_unsigned16', 'H', [65535, 32768, 1, 256] * 2,
+         [65535, 32768, 65535, 256] * 2, [65534, 16384, 0, 1] * 2),
+        ('unpackhi32', 'I', [1, 2, 3, 4], [5, 6, 7, 8], [3, 7, 4, 8]),
+    ]
+    for name, fmt, a, b, expected in integer_known:
+        words = struct.unpack('<4Q', struct.pack('<' + fmt * len(a), *a) +
+                              struct.pack('<' + fmt * len(b), *b))
+        output_fmt = {'pack_unsigned16': 'B', 'pack_signed32': 'h', 'madd16': 'i'}.get(name, fmt)
+        output_words = struct.unpack('<2Q', struct.pack('<' + output_fmt * len(expected), *expected))
+        for rounding in range(4):
+            for denorm in (0, 0x40, 0x8000, 0x8040):
+                for sticky in (0, 0x3f):
+                    mxcsr = 0x1f80 | (rounding << 13) | denorm | sticky
+                    index = len(records)
+                    records.append(LEGACY_STATE.pack(*words, mxcsr, 0xa5a5a5a5, 0x51a7e001cafef00d))
+                    descriptions.append({'integer_known_answer': name,
+                                         'xmm_words_hex': [f'{x:016x}' for x in words], 'mxcsr': hex(mxcsr)})
+                    known_records.append((index, name, LEGACY_STATE.pack(*output_words, *words[2:],
+                                                                 mxcsr, 0, 0x51a7e001cafef00d)))
+    records = [expand_legacy(record, index) for index, record in enumerate(records)]
+    expanded_known = []
+    for index, name, expected in known_records:
+        old = LEGACY_STATE.unpack(expected)
+        full = list(STATE.unpack(records[index]))
+        full[XMM_INDEX:XMM_INDEX + 4] = old[:4]
+        full[MXCSR_INDEX:MXCSR_INDEX + 2] = old[4:6]
+        expanded_known.append((index, name, STATE.pack(*full)))
+    # Repeat each explicit answer with the exact same operands in XMM8/XMM15.
+    # Other registers (including XMM0/XMM1) must remain unchanged.
+    for index, name, expected in expanded_known.copy():
+        original_input = list(STATE.unpack(records[index]))
+        high_input = original_input.copy()
+        high_expected = list(STATE.unpack(expected))
+        for old, new in ((0, 8), (1, 15)):
+            high_input[XMM_INDEX + 2 * new:XMM_INDEX + 2 * new + 2] = original_input[XMM_INDEX + 2 * old:XMM_INDEX + 2 * old + 2]
+        result = high_input.copy()
+        for old, new in ((0, 8), (1, 15)):
+            result[XMM_INDEX + 2 * new:XMM_INDEX + 2 * new + 2] = high_expected[XMM_INDEX + 2 * old:XMM_INDEX + 2 * old + 2]
+        result[MXCSR_INDEX:MXCSR_INDEX + 2] = high_expected[MXCSR_INDEX:MXCSR_INDEX + 2]
+        high_index = len(records)
+        records.append(STATE.pack(*high_input))
+        descriptions.append({**descriptions[index], 'high_register_copy_of': index})
+        expanded_known.append((high_index, name + '_xmm8_15', STATE.pack(*result)))
+    return records, descriptions, expanded_known
 
 
 def integer_model(code, record):
     state = list(STATE.unpack(record))
-    regs = [state[0] | (state[1] << 64), state[2] | (state[3] << 64)]
+    regs = [state[XMM_INDEX + 2 * r] | (state[XMM_INDEX + 2 * r + 1] << 64) for r in range(16)]
     for insn in decode(code):
         a, b = regs[insn.dst], regs[insn.src]
         if insn.op in FP_IDS:
             return None
         if insn.op == 'mov':
             out = b
+        elif insn.op in ('unpacklo', 'unpackhi', 'pack_signed', 'pack_unsigned', 'madd'):
+            w = insn.width
+            mask = (1 << w) - 1
+            lanes = lambda value: [(value >> shift) & mask for shift in range(0, 128, w)]
+            signed = lambda value: value - (1 << w) if value & (1 << (w - 1)) else value
+            aa, bb = lanes(a), lanes(b)
+            if insn.op.startswith('unpack'):
+                half = len(aa) // 2
+                start = 0 if insn.op == 'unpacklo' else half
+                values = [v for pair in zip(aa[start:start + half], bb[start:start + half]) for v in pair]
+            elif insn.op == 'madd':
+                products = [signed(x) * signed(y) for x, y in zip(aa, bb)]
+                values = [products[i] + products[i + 1] for i in range(0, len(products), 2)]
+                w = 32
+            else:
+                values = [signed(x) for x in aa + bb]
+                w //= 2
+                low, high = (-(1 << (w - 1)), (1 << (w - 1)) - 1) if insn.op == 'pack_signed' else (0, (1 << w) - 1)
+                values = [min(high, max(low, x)) for x in values]
+            out = sum((value & ((1 << w) - 1)) << (lane * w) for lane, value in enumerate(values))
         elif insn.width == 128:
             out = {'and': lambda: a & b, 'andnot': lambda: ~a & b,
                    'or': lambda: a | b, 'xor': lambda: a ^ b}[insn.op]()
@@ -146,6 +258,15 @@ def integer_model(code, record):
                     value = b >> (((insn.immediate >> (lane * 2)) & 3) * w)
                 elif insn.op == 'add': value = aa + bb
                 elif insn.op == 'sub': value = aa - bb
+                elif insn.op in ('sadd_sat', 'ssub_sat', 'uadd_sat', 'usub_sat'):
+                    is_signed = insn.op.startswith('s')
+                    x, y = (signed(aa), signed(bb)) if is_signed else (aa, bb)
+                    value = x + y if 'add' in insn.op else x - y
+                    low, high = (-(1 << (w - 1)), (1 << (w - 1)) - 1) if is_signed else (0, mask)
+                    value = max(low, min(high, value))
+                elif insn.op == 'mullo': value = aa * bb
+                elif insn.op == 'mulhi_signed': value = (signed(aa) * signed(bb)) >> w
+                elif insn.op == 'mulhi_unsigned': value = (aa * bb) >> w
                 elif insn.op == 'eq': value = -int(aa == bb)
                 elif insn.op == 'gt': value = -int(signed(aa) > signed(bb))
                 elif insn.op == 'shl': value = aa << insn.immediate
@@ -154,9 +275,9 @@ def integer_model(code, record):
                 else: raise AssertionError(insn)
                 out |= (value & mask) << (lane * w)
         regs[insn.dst] = out & ((1 << 128) - 1)
-    state[:4] = [regs[0] & ((1 << 64) - 1), regs[0] >> 64,
-                 regs[1] & ((1 << 64) - 1), regs[1] >> 64]
-    state[5] = 0
+    state[XMM_INDEX:XMM_INDEX + 32] = [word for value in regs
+                                     for word in (value & ((1 << 64) - 1), value >> 64)]
+    state[STATUS_INDEX] = 0
     return STATE.pack(*state)
 
 
@@ -186,7 +307,7 @@ def main():
         output = out / f'{label}.bin' if binary_output else out / f'{label}.stdout.log'
         with output.open('wb') as stream:
             result = subprocess.run(argv, input=input_bytes, stdout=stream,
-                                    stderr=subprocess.PIPE, timeout=120)
+                                    stderr=subprocess.PIPE, timeout=300)
         (out / f'{label}.stderr.log').write_bytes(result.stderr)
         report['steps'].append({'name': label, 'exit_code': result.returncode})
         save()
@@ -202,19 +323,27 @@ def main():
         for relative, expected in vendor['files_sha256'].items():
             if sha(VENDOR / relative) != expected:
                 raise RuntimeError(f'vendored SoftFloat hash mismatch: {relative}')
-        fixtures = json.loads((ROOT / 'simd_fixtures.json').read_text())
+        fixtures = load_fixtures()
         codes = {name: bytes.fromhex(code) for name, code in fixtures.items()}
         names = list(codes)
         (out / 'simd.ll').write_text(declarations() + '\n\n'.join(lift(c, n) for n, c in codes.items()) + '\n')
         macro = '#define SIMD_FUNCTIONS(X) \\\n' + ' \\\n'.join(f'    X({n})' for n in names) + '\n'
         (out / 'simd_functions.h').write_text(macro)
+        (out / 'cpu_state_layout.h').write_text(c_layout_checks())
         assembly = ['.text']
         for name, code in codes.items():
             assembly += [f'.globl _{name}', f'_{name}:', 'subq $8, %rsp', 'stmxcsr (%rsp)',
-                         'ldmxcsr 32(%rdi)', 'movdqu (%rdi), %xmm0', 'movdqu 16(%rdi), %xmm1',
-                         f'call Loriginal_{name}', 'movdqu %xmm0, (%rdi)', 'movdqu %xmm1, 16(%rdi)',
-                         'stmxcsr 32(%rdi)', 'ldmxcsr (%rsp)', 'addq $8, %rsp',
-                         'movl $0, 36(%rdi)', 'ret', f'Loriginal_{name}:',
+                         f'ldmxcsr {MXCSR_OFFSET}(%rdi)']
+            assembly += [f'movdqu {xmm_offset(r)}(%rdi), %xmm{r}' for r in range(16)]
+            # Only the six arithmetic status flags are observed here. No DF,
+            # trap/privileged modes or general flag-changing guest code.
+            assembly += [f'pushq {OFFSETS["rflags"]}(%rdi)', 'popfq', f'call Loriginal_{name}']
+            assembly += [f'movdqu %xmm{r}, {xmm_offset(r)}(%rdi)' for r in range(16)]
+            assembly += [f'stmxcsr {MXCSR_OFFSET}(%rdi)', 'pushfq', 'popq %rax',
+                         f'xorq {OFFSETS["rflags"]}(%rdi), %rax', 'testq $0x8d5, %rax',
+                         f'jnz Lflags_failure_{name}', 'ldmxcsr (%rsp)', 'addq $8, %rsp',
+                         f'movl $0, {STATUS_OFFSET}(%rdi)', 'ret',
+                         f'Lflags_failure_{name}:', 'ud2', f'Loriginal_{name}:',
                          '.byte ' + ','.join(str(x) for x in code)]
         (out / 'original.s').write_text('\n'.join(assembly) + '\n')
         records, descriptions, known = corpus(args.random_count)
@@ -227,7 +356,7 @@ def main():
         outputs = {}
         for label, arch in [('original-x86_64', 'x86_64'), ('aot-x86_64', 'x86_64'), ('aot-arm64', 'arm64')]:
             argv = ['xcrun', 'clang', '-arch', arch, '-std=c11', '-O2', '-Wall', '-Wextra',
-                    '-I', out, ROOT / 'simd_harness.c']
+                    '-I', out, '-I', ROOT, ROOT / 'simd_harness.c']
             if label.startswith('original'):
                 argv += ['-DORIGINAL', out / 'original.s']
             else:
@@ -281,7 +410,10 @@ def main():
                     offset += len(a)
         independent_integer = 0
         with reference.open('rb') as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-            indices = sorted(set(range(min(32, len(records)))) | set(range(0, len(records), 97)) | {len(records) - 1})
+            # At least one control mode from every base case, as well as varied
+            # rounding/sticky/DAZ/FTZ combinations and every first-base mode.
+            indices = sorted(set(range(min(32, len(records)))) | set(range(0, len(records), 32)) |
+                             set(range(0, len(records), 97)) | {len(records) - 1})
             for index in indices:
                 for f, name in enumerate(names):
                     expected = integer_model(codes[name], records[index])
@@ -292,6 +424,8 @@ def main():
                     independent_integer += 1
         report.update(host=platform.platform(), machine=platform.machine(),
                       fixtures=len(names), input_states=len(records), seed=hex(SEED),
+                      cpu_state_abi=ABI_VERSION, cpu_state_bytes=STATE.size,
+                      cpu_state_offsets=OFFSETS, observed_xmm_registers=list(range(16)),
                       comparisons_per_aot_backend=len(records) * len(names), mismatches=0,
                       random_base_states=args.random_count, native_ubsan=args.sanitize,
                       known_answer_snapshots_per_backend=len(known),
@@ -303,7 +437,8 @@ def main():
                       softfloat_archive_sha256=vendor['archive_sha256'],
                       source_sha256={str(p.relative_to(ROOT.parent)): sha(p) for p in
                                      [ROOT / n for n in ('simd_lift.py', 'simd_fp.c', 'simd_harness.c',
-                                                        'simd_fixtures.json', 'run_simd.py')] +
+                                                        'simd_fixtures.json', 'simd_register_fixtures.json', 'run_simd.py',
+                                                        'cpu_state.h', 'cpu_state.py')] +
                                      [VENDOR / 'manifest.json']},
                       inputs_sha256=sha(out / 'inputs.bin'),
                       results_sha256={name: sha(path) for name, path in outputs.items()})
