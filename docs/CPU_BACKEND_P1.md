@@ -79,8 +79,10 @@ byte comparison. This is correctness evidence for the stated subset only.
   XMM0–XMM15 execute under the existing bounded instruction contract.
 - [x] Bounded 32/64-bit GPR arithmetic and explicit CF/PF/AF/ZF/SF/OF, including
   ADC/SBB, INC/DEC carry preservation and all sixteen CMOVcc conditions in the common state.
+- [x] Common-state guest memory accesses: checked single-region mapping, permissions,
+  8/16/32/64-bit loads/stores, extensions, SIB addressing and precise checked failures.
 - [ ] Full observable guest register/flag execution semantics and migration of the
-  earlier memory/stack/callback contracts to that common state.
+  earlier forward-control-flow/stack/callback contracts to that common state.
 - [x] Bounded register-only SSE/SSE2 integer and FP validation: all rounding modes,
   NaN payloads, masked exception flags, subnormals and all DAZ/FTZ modes.
 - [ ] General SIMD/FP coverage and integration with full guest state, including
@@ -105,6 +107,13 @@ general-state semantics and integration of memory, calls and SIMD. This does not
 complete P1. The whitelist remains an isolated
 experiment, not a decision to hand-build a complete x86 decoder/semantics library.
 The existing native GPU process and shared protocol remain separate work.
+
+The [common-state memory increment](CPU_BACKEND_STATE_MEMORY.md) combines scalar
+instructions with checked guest accesses and passes 4,927,636 complete CPU/memory
+snapshots per AOT backend, including native ARM64 UBSan. All primitive fixtures
+exercise success, bounds rejection, invalid descriptors and permission denial.
+Stack/CALL/RET and callback migration, followed by combined control flow, remain
+the next integration gates.
 
 ## Completed increment: bounded stacks and direct calls
 

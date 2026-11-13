@@ -104,10 +104,12 @@ This boundary adds correctness overhead; it is not a production optimization.
 No `fast-math`, native FP IR, approximate square roots or fused operations are
 used. This software correctness path makes no performance claim.
 
-The common state is now used by SIMD. The previous scalar integer, memory,
-stack, indirect-call and callback experiments still use their restricted layouts.
-Combining their execution contracts and migrating them to the shared state remains
-open; the struct alone does not establish full CPU semantics or a loader.
+The common state is now used by SIMD, scalar GPR/flags and the
+[checked guest-memory path](CPU_BACKEND_STATE_MEMORY.md). The earlier leaf,
+forward-control-flow, stack, indirect-call and callback experiments still use
+their restricted layouts. Combining their execution contracts and migrating the
+remaining paths stays open; the struct alone does not establish full CPU semantics
+or a loader.
 
 ## Physical Apple Silicon evidence
 
@@ -129,7 +131,7 @@ signed/unsigned limits and the byte/word thresholds used by narrowing packs.
 | Independent Python integer model vs original x86 | 1,963,204 selected state snapshots passed |
 | Invalid MXCSR modes | 4,680 rejected, with unchanged state except status, per AOT backend |
 | Host FP environment, state guards and reserved sentinel | Preserved at every tested invocation |
-| Combined CPU static acceptance/rejection suite | 59 tests passed, including the GPR increment |
+| Combined CPU static acceptance/rejection suite | 72 tests passed, including GPR and guest memory |
 | Native ARM64 UndefinedBehaviorSanitizer | Full 53,040,000-snapshot corpus passed; zero differences or sanitizer reports |
 
 Known answers cover ties, cancellation and signed zero, division by zero,

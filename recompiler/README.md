@@ -264,7 +264,7 @@ the generated ARM64 executable executes natively.
 On physical Apple Silicon, **780 fixtures × 68,000 input states = 53,040,000 full
 state comparisons per AOT backend**, with zero differences. Additional checks
 cover 2,560 known answers per executable, 1,963,204 independently modeled integer
-snapshots, 4,680 invalid-mode rejections per AOT backend and 59 combined CPU static tests.
+snapshots, 4,680 invalid-mode rejections per AOT backend and 72 combined CPU static tests.
 The ARM harness checks preservation of FPSR.QC both initially clear and set;
 generated functions preserve host status around potentially saturating NEON code.
 The `--sanitize` option additionally executes the corpus with native UBSan.
@@ -293,7 +293,32 @@ logical AF is explicitly normalized rather than asserted as architectural output
 The default corpus passes **1,720 fixtures × 5,718 states = 9,834,960 snapshots
 per AOT backend**, with zero differences, 22 explicit answers and 718,960
 independently modeled snapshots. Native ARM64 UBSan passes the same corpus.
-The combined CPU test suite passes 59 tests. Complete outputs with matching
+The combined CPU test suite passes 72 tests. Complete outputs with matching
 hashes are archived once, with a verified gzip round trip before removing raw
 copies; reproduction data and `verification.json` stay in `out/recompiler-gpr/`.
 See [the exact GPR/flag contract and oracle boundaries](../docs/CPU_BACKEND_GPR.md).
+
+## Checked guest memory in the common state
+
+```sh
+python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
+python3 recompiler/run_state_memory.py --sanitize
+```
+
+This path combines scalar GPR/flag instructions and 8/16/32/64-bit loads/stores
+using `BbCpuState` plus a trusted `BbGuestMemory` descriptor. Guest addresses stay
+integer values until bounds and permissions pass. It supports all data/base GPRs,
+signed displacements, SIB scaling, unaligned accesses, sign/zero extension and
+partial register/memory writes. Failed accesses preserve earlier completed effects
+and record status, effective address and the failing instruction offset.
+
+**868 fixtures × 5,677 inputs = 4,927,636 complete CPU/memory snapshots per AOT
+backend** pass with zero differences, including native ARM64 UBSan, 26 literal
+answers and 274,069 independent-model snapshots. Every primitive must exercise
+all four outcome codes. Inputs, generated code, diagnostics, a verified compressed
+snapshot archive and `verification.json` stay in `out/recompiler-state-memory/`.
+
+The earlier memory/forward-branch mode is retained for regression and its existing
+stack/callback decoder consumers. New stack/control-flow migration, SIMD memory,
+RIP-relative addressing, multi-region mapping and runtime exception delivery remain
+open. See [the mapping contract, precise failures and reference boundaries](../docs/CPU_BACKEND_STATE_MEMORY.md).

@@ -1,10 +1,11 @@
 # CPU-state ABI v1 and sixteen-register SIMD increment
 
 Updated 2026-11-13. Work for [issue #9](https://github.com/bmy/bbport-mac/issues/9).
-The common state definition is now consumed by the register-only SIMD experiment
-and the [32/64-bit GPR/flag experiment](CPU_BACKEND_GPR.md). The earlier
-memory/stack/callback experiments still use their own restricted layouts.
-General CPU-state integration remains open.
+The common state definition is now consumed by the register-only SIMD experiment,
+the [32/64-bit GPR/flag experiment](CPU_BACKEND_GPR.md) and the
+[checked guest-memory path](CPU_BACKEND_STATE_MEMORY.md). The earlier
+forward-control-flow/stack/callback experiments still use their restricted
+layouts. General CPU-state integration remains open.
 
 ## Layout
 
@@ -84,7 +85,7 @@ The 2026-11-13 run passed with zero differences across original x86, AOT x86,
 AOT ARM64 and AOT ARM64 UBSan. All four result SHA-256 hashes are identical.
 The independent Python integer model passed **1,963,204** selected complete
 snapshots; the combined CPU acceptance/rejection and layout suite now passes
-**59 tests**, including the subsequent GPR increment.
+**72 tests**, including the subsequent GPR and guest-memory increments.
 See `out/recompiler-cpu-state-v1/verification.json` for the measured outcomes,
 compiler commands, source hashes, state offsets and result hashes. Snapshots now
 include 416 bytes rather than 48: the four uncompressed result files total about
@@ -97,8 +98,9 @@ Both the compressed hash and original snapshot hash are recorded. A complete
 gzip round trip was checked before deleting the four raw copies. Re-running the
 test command produces fresh uncompressed files.
 
-This increment neither migrates the older scalar/stack modes nor integrates a
-production CPU backend. Remaining work includes GPR/flag-producing instruction
+The checked memory path now executes scalar GPR/flag operations and guest
+loads/stores using this same state. The older forward-control-flow/stack modes
+still need migration. Remaining work includes GPR/flag-producing instruction
 coverage beyond the bounded arithmetic subset, combined memory/call/SIMD execution,
 x87/AVX/segment state, exceptions, atomics and real game-function coverage.
 Actual game testing stays with the user.
