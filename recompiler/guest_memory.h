@@ -1,8 +1,9 @@
 /* Trusted host descriptor for one bounded guest region. CPU registers contain
  * guest integers; only bytes is a host pointer. Buffers, descriptor and CPU state
- * must be disjoint, and byte_size must fit the host allocation (maximum 64 here).
+ * must be disjoint, and byte_size must fit the host allocation. Limits are
+ * supplied by each entry contract: 64 data bytes, 512 stack bytes in stack mode.
  * Permissions: read=1, write=2. Status: success=0, bounds=1, descriptor=2, denied=3.
- * fault_offset is the failing instruction's byte offset, not a dispatched RIP. */
+ * fault_offset is the instruction offset in the fixture/module code image. */
 #ifndef BB_EXPERIMENT_GUEST_MEMORY_H
 #define BB_EXPERIMENT_GUEST_MEMORY_H
 #include <stdint.h>

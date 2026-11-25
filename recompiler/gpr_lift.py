@@ -19,6 +19,7 @@ class Instruction:
     src: int
     width: int
     condition: int = 0
+    immediate: int | None = None
 
 
 def decode(code):
@@ -77,9 +78,21 @@ def defined_flags(code):
 
 
 def lift(code, name):
-    instructions = decode(code)
+    return lift_instructions(decode(code), name)
+
+
+def lift_instructions(instructions, name):
+    """Lower validated scalar IR; stack mode supplies ADD/SUB immediate operands."""
     if not name.isascii() or not name.isidentifier():
         raise ValueError('invalid function name')
+    if not instructions:
+        raise ValueError('empty scalar IR')
+    for insn in instructions:
+        if (insn.op not in {*BINARY.values(), 'cmov', 'inc', 'dec'} or insn.width not in (32, 64)
+                or not 0 <= insn.dst < 16 or not 0 <= insn.src < 16 or not 0 <= insn.condition < 16
+                or (insn.immediate is not None and
+                    (type(insn.immediate) is not int or insn.op not in ('add', 'sub')))):
+            raise ValueError('unsupported scalar IR contract')
     lines = [f'define void @{name}(ptr %state) {{', 'entry:']
     serial = 0
 
@@ -119,6 +132,8 @@ def lift(code, name):
         a, b = registers[insn.dst], registers[insn.src]
         if w == 32:
             a, b = emit(f'trunc i64 {a} to i32'), emit(f'trunc i64 {b} to i32')
+        if insn.immediate is not None:
+            b = str(insn.immediate & ((1 << w) - 1))
         if op == 'mov':
             result = b
         elif op == 'cmov':

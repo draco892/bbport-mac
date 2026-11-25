@@ -1,6 +1,6 @@
 # ARM64 CPU experiment: register-only SSE/SSE2 correctness
 
-Updated 2026-11-13. This completes a **bounded SIMD/FP correctness increment**
+Updated 2026-11-25. This completes a **bounded SIMD/FP correctness increment**
 within P1. It does not complete the CPU backend, select the production execution
 strategy or establish game compatibility. No game files or gameplay tests are
 used by this experiment.
@@ -105,8 +105,8 @@ No `fast-math`, native FP IR, approximate square roots or fused operations are
 used. This software correctness path makes no performance claim.
 
 The common state is now used by SIMD, scalar GPR/flags and the
-[checked guest-memory path](CPU_BACKEND_STATE_MEMORY.md). The earlier leaf,
-forward-control-flow, stack, indirect-call and callback experiments still use
+[checked guest-memory path](CPU_BACKEND_STATE_MEMORY.md). The [stack/direct-call path](CPU_BACKEND_STATE_STACK.md) now shares that state too.
+The earlier leaf, forward-control-flow, indirect-call and callback experiments use
 their restricted layouts. Combining their execution contracts and migrating the
 remaining paths stays open; the struct alone does not establish full CPU semantics
 or a loader.
@@ -131,7 +131,7 @@ signed/unsigned limits and the byte/word thresholds used by narrowing packs.
 | Independent Python integer model vs original x86 | 1,963,204 selected state snapshots passed |
 | Invalid MXCSR modes | 4,680 rejected, with unchanged state except status, per AOT backend |
 | Host FP environment, state guards and reserved sentinel | Preserved at every tested invocation |
-| Combined CPU static acceptance/rejection suite | 72 tests passed, including GPR and guest memory |
+| Combined CPU static acceptance/rejection suite | 89 tests passed, including GPR, guest memory and stack |
 | Native ARM64 UndefinedBehaviorSanitizer | Full 53,040,000-snapshot corpus passed; zero differences or sanitizer reports |
 
 Known answers cover ties, cancellation and signed zero, division by zero,

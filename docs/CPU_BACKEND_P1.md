@@ -1,7 +1,7 @@
 # ARM64 CPU backend: early P1 correctness validation
 
 Issue: [#9](https://github.com/bmy/bbport-mac/issues/9).
-Updated: 2026-11-13. **P1 is not complete; CPU backend selection remains open.**
+Updated: 2026-11-25. **P1 is not complete; CPU backend selection remains open.**
 The game-dependent P0 baseline remains open: the game is now available and the
 CPU Rosetta + native GPU reference launches and initial fixed-camera clinic
 measurements are retained, but extended gameplay measurements and representative
@@ -71,7 +71,9 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [x] Integer leaf functions on physical ARM64 (the P0 experiment).
 - [x] Bounded synthetic memory accesses and forward direct control flow.
 - [x] Bounded synthetic stacks and direct calls/returns across known functions.
-- [ ] General guest stack addressing, stack arguments and non-linear CFGs with calls.
+- [x] Common-state bounded guest stack, RBP frames, direct CALL/RET, integer stack
+  arguments and guest return addresses, compared with whole original x86 functions.
+- [ ] General stack/ABI coverage, recursive execution and non-linear CFGs with calls.
 - [x] Synthetic guest code-address registry and bounded indirect calls.
 - [x] Synthetic synchronous scalar host/guest callbacks with bounded reentry.
 - [ ] General target discovery/resolution, indirect jumps and general callback ABI/lifecycle.
@@ -82,7 +84,7 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [x] Common-state guest memory accesses: checked single-region mapping, permissions,
   8/16/32/64-bit loads/stores, extensions, SIB addressing and precise checked failures.
 - [ ] Full observable guest register/flag execution semantics and migration of the
-  earlier forward-control-flow/stack/callback contracts to that common state.
+  remaining forward-control-flow/indirect-call/callback contracts to that common state.
 - [x] Bounded register-only SSE/SSE2 integer and FP validation: all rounding modes,
   NaN payloads, masked exception flags, subnormals and all DAZ/FTZ modes.
 - [ ] General SIMD/FP coverage and integration with full guest state, including
@@ -112,8 +114,11 @@ The [common-state memory increment](CPU_BACKEND_STATE_MEMORY.md) combines scalar
 instructions with checked guest accesses and passes 4,927,636 complete CPU/memory
 snapshots per AOT backend, including native ARM64 UBSan. All primitive fixtures
 exercise success, bounds rejection, invalid descriptors and permission denial.
-Stack/CALL/RET and callback migration, followed by combined control flow, remain
-the next integration gates.
+The [common-state stack increment](CPU_BACKEND_STATE_STACK.md) now adds a separate
+512-byte stack, active guest RIP, direct calls/returns and stack arguments. It
+passes 135,030 complete snapshots per AOT backend and 57,709 successful whole
+original x86 replays, including actual guest CALL/RET addresses. Indirect-call
+and callback migration, followed by combined control flow, are the next gates.
 
 ## Completed increment: bounded stacks and direct calls
 

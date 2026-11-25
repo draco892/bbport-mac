@@ -264,7 +264,7 @@ the generated ARM64 executable executes natively.
 On physical Apple Silicon, **780 fixtures × 68,000 input states = 53,040,000 full
 state comparisons per AOT backend**, with zero differences. Additional checks
 cover 2,560 known answers per executable, 1,963,204 independently modeled integer
-snapshots, 4,680 invalid-mode rejections per AOT backend and 72 combined CPU static tests.
+snapshots, 4,680 invalid-mode rejections per AOT backend and 89 combined CPU static tests.
 The ARM harness checks preservation of FPSR.QC both initially clear and set;
 generated functions preserve host status around potentially saturating NEON code.
 The `--sanitize` option additionally executes the corpus with native UBSan.
@@ -293,7 +293,7 @@ logical AF is explicitly normalized rather than asserted as architectural output
 The default corpus passes **1,720 fixtures × 5,718 states = 9,834,960 snapshots
 per AOT backend**, with zero differences, 22 explicit answers and 718,960
 independently modeled snapshots. Native ARM64 UBSan passes the same corpus.
-The combined CPU test suite passes 72 tests. Complete outputs with matching
+The combined CPU test suite passes 89 tests. Complete outputs with matching
 hashes are archived once, with a verified gzip round trip before removing raw
 copies; reproduction data and `verification.json` stay in `out/recompiler-gpr/`.
 See [the exact GPR/flag contract and oracle boundaries](../docs/CPU_BACKEND_GPR.md).
@@ -322,3 +322,31 @@ The earlier memory/forward-branch mode is retained for regression and its existi
 stack/callback decoder consumers. New stack/control-flow migration, SIMD memory,
 RIP-relative addressing, multi-region mapping and runtime exception delivery remain
 open. See [the mapping contract, precise failures and reference boundaries](../docs/CPU_BACKEND_STATE_MEMORY.md).
+
+## Common-state stack and direct calls
+
+```sh
+python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
+python3 recompiler/run_state_stack.py --sanitize
+```
+
+This mode combines the common CPU state with a 64-byte data region and a separate
+512-byte stack. It implements all-register PUSH/POP, RBP frames/LEAVE, signed RSP
+adjustments, stack arguments and registered direct CALL/RET. Guest RIP is active;
+stack return slots hold guest code addresses rather than native pointers. Failed
+accesses/returns retain earlier effects and the callee's current state.
+
+**70 entries × 1,929 states = 135,030 full CPU/data/stack snapshots per AOT
+backend** pass, including native ARM64 UBSan. Every successful checked x86 run
+is replayed using whole original functions with real CALL/RET: **57,709 replays**
+match all GPRs, flags and every data/stack byte. The Python model checks the full
+corpus, 40 literal snapshots pass per executable, and the combined CPU unit suite
+passes 89 tests. Results, source hashes and a lossless snapshot archive stay in
+`out/recompiler-state-stack/`.
+
+The GPR lowerer now accepts validated immediate operands internally for stack
+ADD/SUB; its raw decoder contract is unchanged. Memory helpers take an explicit
+compile-time region limit while the standalone memory path keeps its 64-byte
+default. Both GPR and memory regression corpora pass after these shared changes.
+Indirect calls/callbacks, recursive/nonlinear control flow and runtime/game
+integration remain open. See [the exact stack/return policy and native reference](../docs/CPU_BACKEND_STATE_STACK.md).

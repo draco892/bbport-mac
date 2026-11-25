@@ -1,8 +1,8 @@
 # Common-state GPR and arithmetic-flag correctness
 
-Updated 2026-11-13. Part of [issue #9](https://github.com/bmy/bbport-mac/issues/9).
+Updated 2026-11-25. Part of [issue #9](https://github.com/bmy/bbport-mac/issues/9).
 This adds executable GPR/flag semantics to the same 416-byte state already used
-by SIMD. It is a bounded synthetic experiment; forward-control-flow/stack/callback migration,
+by SIMD. It is a bounded synthetic experiment; forward-control-flow/indirect-call/callback migration,
 general instruction coverage and production runtime integration remain open.
 
 ## Supported contract
@@ -89,7 +89,7 @@ incomplete, failures are marked failed, and success requires all checks below.
 | Native ARM64 UBSan | Same complete corpus passed, no differences or sanitizer findings |
 | Explicit literal answers | 22 passed per executable |
 | Independent Python integer model | 718,960 selected complete snapshots passed |
-| Combined CPU acceptance/rejection/layout test suite, including guest memory | 72 passed |
+| Combined CPU acceptance/rejection/layout test suite, including memory and stack | 89 passed |
 
 The corpus includes all pairs from sixteen integer edges under four initial flag
 patterns, every low-byte value against seven carry/borrow boundaries with both
@@ -111,8 +111,10 @@ uncompressed hashes are recorded under `result_archive`. A full gzip round trip
 is verified before the raw copies are removed. The runner does this automatically.
 
 The [checked memory increment](CPU_BACKEND_STATE_MEMORY.md) now combines guest
-accesses and scalar instructions in this state. The next integration work is to
-migrate stack/callback/control-flow contracts and combine them with SIMD. Full instruction
+accesses and scalar instructions in this state. The [stack/direct-call path](CPU_BACKEND_STATE_STACK.md) also uses this layout
+and the shared arithmetic lowerer for signed RSP adjustments. The raw GPR decoder
+retains its register-only contract. The next integration work is to migrate
+indirect-call/callback/control-flow contracts and combine them with SIMD. Full instruction
 coverage, exceptions, atomics, game-function translation and runtime dispatch
 remain open. Actual gameplay testing stays with the user.
 

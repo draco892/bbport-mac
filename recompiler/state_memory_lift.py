@@ -124,7 +124,9 @@ def effective_address(insn, registers):
     return (address + insn.displacement) & MASK64
 
 
-def lift(code, name):
+def lift(code, name, *, max_bytes=MEMORY_BYTES):
+    if type(max_bytes) is not int or not 1 <= max_bytes <= 512:
+        raise ValueError('bounded region limit must be 1..512 bytes')
     if not name.isascii() or not name.isidentifier(): raise ValueError('invalid function name')
     instructions = decode(code)
     helpers = []
@@ -143,7 +145,7 @@ def lift(code, name):
     data = emit(f'load ptr, ptr {fields[0]}, align 8')
     base, size, permissions = [emit(f'load i64, ptr {fields[i]}, align 8') for i in (1, 2, 3)]
     lines += [f'  store i64 0, ptr {fields[4]}, align 8', f'  store i64 0, ptr {fields[5]}, align 8']
-    limited = emit(f'icmp ule i64 {size}, {MEMORY_BYTES}')
+    limited = emit(f'icmp ule i64 {size}, {max_bytes}')
     end_limit = emit(f'sub i64 -1, {size}')
     no_wrap = emit(f'icmp ule i64 {base}, {end_limit}')
     known_permissions = emit(f'icmp ule i64 {permissions}, 3')

@@ -1,6 +1,6 @@
 # Checked guest memory in the common CPU state
 
-Updated 2026-11-13. Part of [issue #9](https://github.com/bmy/bbport-mac/issues/9).
+Updated 2026-11-25. Part of [issue #9](https://github.com/bmy/bbport-mac/issues/9).
 The memory-access portion now has a common-state implementation, including
 dynamic guest-address translation, byte/word/dword/qword accesses and scalar
 GPR/flag instruction sequences. The previous `memory_lift.py` mode remains as
@@ -130,7 +130,7 @@ another run and `--random-count N` controls additional seeded random inputs.
 | Native ARM64 UBSan | Complete corpus passed without differences or sanitizer findings |
 | Literal complete-snapshot answers | 26 passed per executable |
 | Independent model | 274,069 complete snapshots passed, including 5,266 directed cases |
-| Combined CPU static/acceptance/layout suite | 72 tests passed |
+| Combined CPU static/acceptance/layout suite | 89 tests passed |
 
 Every primitive fixture must exercise all four status codes, or the runner fails
 even if the observed outputs agree. In this run there are 156,586 successes,
@@ -152,8 +152,10 @@ remain in the output directory. Identical results are archived once, and a full
 gzip round trip is verified before raw copies are removed. Failed runs retain a
 failed report and raw diagnostics instead of leaving an earlier success report.
 
-The next step is migrating stack/CALL/RET contracts onto this common state and
-guest mapping; then indirect calls/callbacks and combined control flow. Real
+The [stack/direct-call increment](CPU_BACKEND_STATE_STACK.md) now uses this
+state with a separate 512-byte stack mapping. Its memory helpers explicitly select
+a compile-time 512-byte limit; this standalone memory mode retains its 64-byte
+default. The next steps are indirect calls/callbacks and combined control flow. Real
 game coverage, multiple-region mapping, faults/unwinding, memory ordering and
 runtime integration remain open. The user performs actual gameplay tests.
 

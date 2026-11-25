@@ -1,0 +1,547 @@
+{
+  "leaf_add": {
+    "address": 0,
+    "parts": [
+      "488b074801f0c3"
+    ]
+  },
+  "leaf_transform": {
+    "address": 256,
+    "parts": [
+      "4889f04801f04889c648894708c3"
+    ]
+  },
+  "preserve_rbx": {
+    "address": 512,
+    "parts": [
+      "534889f3488b074801f0488947104889d85bc3"
+    ]
+  },
+  "framed_leaf": {
+    "address": 768,
+    "parts": [
+      "554889e54883ec10488975f8488b07488945f0488b75f0488b45f84801f0c9c3"
+    ]
+  },
+  "rsp_roundtrip": {
+    "address": 1024,
+    "parts": [
+      "4883ec1848893424488b074889442408488b3424488b4424084801f04883c418c3"
+    ]
+  },
+  "push_pop_values": {
+    "address": 1280,
+    "parts": [
+      "56488b07505e584801f0c3"
+    ]
+  },
+  "call_once": {
+    "address": 1536,
+    "parts": [
+      "53",
+      {
+        "call": "leaf_add"
+      },
+      "5bc3"
+    ]
+  },
+  "nested_calls": {
+    "address": 1792,
+    "parts": [
+      "534889f3",
+      {
+        "call": "call_once"
+      },
+      "488947184889de",
+      {
+        "call": "leaf_transform"
+      },
+      "5bc3"
+    ]
+  },
+  "frame_calls": {
+    "address": 2048,
+    "parts": [
+      "554889e54883ec10488975f8",
+      {
+        "call": "leaf_transform"
+      },
+      "488b75f8",
+      {
+        "call": "leaf_add"
+      },
+      "c9c3"
+    ]
+  },
+  "spill_between_calls": {
+    "address": 2304,
+    "parts": [
+      "4883ec1848893424",
+      {
+        "call": "leaf_add"
+      },
+      "4889442408",
+      {
+        "call": "leaf_transform"
+      },
+      "488b7424084801f04883c418c3"
+    ]
+  },
+  "nested_frames": {
+    "address": 2560,
+    "parts": [
+      "554889e5534883ec084889f3",
+      {
+        "call": "frame_calls"
+      },
+      "4889de",
+      {
+        "call": "preserve_rbx"
+      },
+      "4883c4085bc9c3"
+    ]
+  },
+  "reallocate": {
+    "address": 2816,
+    "parts": [
+      "4883ec1048893424488b04244883c4105058c3"
+    ]
+  },
+  "forward_call": {
+    "address": 3072,
+    "parts": [
+      "53",
+      {
+        "call": "late_leaf"
+      },
+      "5bc3"
+    ]
+  },
+  "late_leaf": {
+    "address": 3328,
+    "parts": [
+      "488b074829f0c3"
+    ]
+  },
+  "large_frame_call": {
+    "address": 3584,
+    "parts": [
+      "4883ec784889742470",
+      {
+        "call": "leaf_add"
+      },
+      "488b7424704801f04883c478c3"
+    ]
+  },
+  "saved_rax_call": {
+    "address": 3840,
+    "parts": [
+      "4883ec18488b074889442410",
+      {
+        "call": "leaf_transform"
+      },
+      "488b4424104801f04883c418c3"
+    ]
+  },
+  "framed_callee": {
+    "address": 4096,
+    "parts": [
+      "53",
+      {
+        "call": "framed_leaf"
+      },
+      "5bc3"
+    ]
+  },
+  "bare_ret": {
+    "address": 4608,
+    "parts": [
+      "c3"
+    ]
+  },
+  "push_pop_r0": {
+    "address": 4864,
+    "parts": [
+      "5058c3"
+    ]
+  },
+  "push_pop_r1": {
+    "address": 5120,
+    "parts": [
+      "5159c3"
+    ]
+  },
+  "push_pop_r2": {
+    "address": 5376,
+    "parts": [
+      "525ac3"
+    ]
+  },
+  "push_pop_r3": {
+    "address": 5632,
+    "parts": [
+      "535bc3"
+    ]
+  },
+  "push_pop_r4": {
+    "address": 5888,
+    "parts": [
+      "545cc3"
+    ]
+  },
+  "push_pop_r5": {
+    "address": 6144,
+    "parts": [
+      "555dc3"
+    ]
+  },
+  "push_pop_r6": {
+    "address": 6400,
+    "parts": [
+      "565ec3"
+    ]
+  },
+  "push_pop_r7": {
+    "address": 6656,
+    "parts": [
+      "575fc3"
+    ]
+  },
+  "push_pop_r8": {
+    "address": 6912,
+    "parts": [
+      "41504158c3"
+    ]
+  },
+  "push_pop_r9": {
+    "address": 7168,
+    "parts": [
+      "41514159c3"
+    ]
+  },
+  "push_pop_r10": {
+    "address": 7424,
+    "parts": [
+      "4152415ac3"
+    ]
+  },
+  "push_pop_r11": {
+    "address": 7680,
+    "parts": [
+      "4153415bc3"
+    ]
+  },
+  "push_pop_r12": {
+    "address": 7936,
+    "parts": [
+      "4154415cc3"
+    ]
+  },
+  "push_pop_r13": {
+    "address": 8192,
+    "parts": [
+      "4155415dc3"
+    ]
+  },
+  "push_pop_r14": {
+    "address": 8448,
+    "parts": [
+      "4156415ec3"
+    ]
+  },
+  "push_pop_r15": {
+    "address": 8704,
+    "parts": [
+      "4157415fc3"
+    ]
+  },
+  "adjust_zero": {
+    "address": 8960,
+    "parts": [
+      "4883ec004883c400c3"
+    ]
+  },
+  "negative_adjust8": {
+    "address": 9216,
+    "parts": [
+      "4883ecff4883c4ffc3"
+    ]
+  },
+  "negative_adjust32": {
+    "address": 9472,
+    "parts": [
+      "4881ecffffffff4881c4ffffffffc3"
+    ]
+  },
+  "large_frame256": {
+    "address": 9728,
+    "parts": [
+      "554889e54881ec000100004889b424f0000000488b8424f0000000c9c3"
+    ]
+  },
+  "stack_arg7": {
+    "address": 9984,
+    "parts": [
+      "488b442408c3"
+    ]
+  },
+  "stack_args7_8": {
+    "address": 10240,
+    "parts": [
+      "488b442408488b4c24104801c8c3"
+    ]
+  },
+  "framed_stack_args": {
+    "address": 10496,
+    "parts": [
+      "554889e5488b4510488b4d184801c8c9c3"
+    ]
+  },
+  "stack_alias_arg": {
+    "address": 10752,
+    "parts": [
+      "4989e0498b4008c3"
+    ]
+  },
+  "call_stack_args": {
+    "address": 11008,
+    "parts": [
+      "535256",
+      {
+        "call": "stack_args7_8"
+      },
+      "4883c4105bc3"
+    ]
+  },
+  "call_framed_args": {
+    "address": 11264,
+    "parts": [
+      "535256",
+      {
+        "call": "framed_stack_args"
+      },
+      "4883c4105bc3"
+    ]
+  },
+  "return_address": {
+    "address": 11520,
+    "parts": [
+      "488b0424c3"
+    ]
+  },
+  "call_return_address": {
+    "address": 11776,
+    "parts": [
+      "53",
+      {
+        "call": "return_address"
+      },
+      "5bc3"
+    ]
+  },
+  "nested_return_address": {
+    "address": 12032,
+    "parts": [
+      "4154",
+      {
+        "call": "call_return_address"
+      },
+      "415cc3"
+    ]
+  },
+  "direct_call": {
+    "address": 12288,
+    "parts": [
+      "53",
+      {
+        "call": "bare_ret"
+      },
+      "5bc3"
+    ]
+  },
+  "nested_direct": {
+    "address": 12544,
+    "parts": [
+      "4154",
+      {
+        "call": "direct_call"
+      },
+      "415cc3"
+    ]
+  },
+  "callee_data_fault": {
+    "address": 12800,
+    "parts": [
+      "488b4740c3"
+    ]
+  },
+  "caller_fault": {
+    "address": 13056,
+    "parts": [
+      "534889f3",
+      {
+        "call": "callee_data_fault"
+      },
+      "5bc3"
+    ]
+  },
+  "corrupt_return": {
+    "address": 13312,
+    "parts": [
+      "48890424c3"
+    ]
+  },
+  "partial_return_corrupt": {
+    "address": 13568,
+    "parts": [
+      "88442407c3"
+    ]
+  },
+  "pop_rsp_value": {
+    "address": 13824,
+    "parts": [
+      "5cc3"
+    ],
+    "abi": false
+  },
+  "bare_leave": {
+    "address": 14080,
+    "parts": [
+      "c9c3"
+    ],
+    "abi": false
+  },
+  "pop_then_ret": {
+    "address": 14336,
+    "parts": [
+      "58c3"
+    ],
+    "abi": false
+  },
+  "callee_saved_all": {
+    "address": 14592,
+    "parts": [
+      "535541544155415641574889f34889f54989f44989f54989f64989f7415f415e415d415c5d5bc3"
+    ]
+  },
+  "unaligned_frame_slot": {
+    "address": 14848,
+    "parts": [
+      "554889e54883ec18488975f7488b45f7c9c3"
+    ]
+  },
+  "deep_call1": {
+    "address": 15104,
+    "parts": [
+      "53",
+      {
+        "call": "bare_ret"
+      },
+      "5bc3"
+    ]
+  },
+  "deep_call2": {
+    "address": 15360,
+    "parts": [
+      "53",
+      {
+        "call": "deep_call1"
+      },
+      "5bc3"
+    ]
+  },
+  "deep_call3": {
+    "address": 15616,
+    "parts": [
+      "53",
+      {
+        "call": "deep_call2"
+      },
+      "5bc3"
+    ]
+  },
+  "deep_call4": {
+    "address": 15872,
+    "parts": [
+      "53",
+      {
+        "call": "deep_call3"
+      },
+      "5bc3"
+    ]
+  },
+  "deep_call5": {
+    "address": 16128,
+    "parts": [
+      "53",
+      {
+        "call": "deep_call4"
+      },
+      "5bc3"
+    ]
+  },
+  "deep_call6": {
+    "address": 16384,
+    "parts": [
+      "53",
+      {
+        "call": "deep_call5"
+      },
+      "5bc3"
+    ]
+  },
+  "repeated_calls": {
+    "address": 16640,
+    "parts": [
+      "53",
+      {
+        "call": "return_address"
+      },
+      {
+        "call": "return_address"
+      },
+      {
+        "call": "return_address"
+      },
+      "5bc3"
+    ]
+  },
+  "saved_return_copy": {
+    "address": 16896,
+    "parts": [
+      "488b042448894718c3"
+    ]
+  },
+  "carry_leaf": {
+    "address": 17152,
+    "parts": [
+      "4801f0c3"
+    ]
+  },
+  "call_carry_flags": {
+    "address": 17408,
+    "parts": [
+      "53",
+      {
+        "call": "carry_leaf"
+      },
+      "5b4811d1c3"
+    ]
+  },
+  "logic_leaf": {
+    "address": 17664,
+    "parts": [
+      "4885f6c3"
+    ]
+  },
+  "call_logic_flags": {
+    "address": 17920,
+    "parts": [
+      "53",
+      {
+        "call": "logic_leaf"
+      },
+      "5b480f44c2c3"
+    ]
+  }
+}
