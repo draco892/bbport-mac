@@ -99,11 +99,15 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [x] RIP-relative scalar memory and indirect CALL through a registered target
   set, 32/64-bit LEA, and selected register-immediate MOV and ALU encodings.
 - [x] Checked memory CMP/TEST and immediate MOV stores, register extensions,
-  multi-byte NOPs, and 32/64-bit immediate SHL/SHR/SAR/ROL/ROR.
+  multi-byte NOPs, and 32/64-bit SHL/SHR/SAR/ROL/ROR with immediate or CL counts.
 - [x] Checked AVX scalar and packed memory moves and the upper YMM state
   they read or clear.
+- [x] AOT AVX ADD/SUB/MUL/DIV with masked guest FP exceptions and Rosetta
+  comparisons for packed single-precision arithmetic and scalar VADDSD.
 - [x] Native ARM64 loading of the standard linked image, initial TLS and dispatch
   to one translated module entry with a registered runtime import.
+- [x] Native hybrid startup runs both real module initializers and enters eboot.
+  Unicorn executes uncovered paths, with a verified AOT handoff in libc.
 - [ ] General SIMD/FP coverage and integration with full guest state, including
   remaining instructions, registers, conversions/comparisons and unmasked traps.
 - [ ] Atomics and an explicit strategy for x86 memory ordering on ARM64.
@@ -132,8 +136,8 @@ The four successful inputs compare the return value, defined flags, preserved
 registers, guest stack entries and two guest memory writes. A separate
 synthetic case checks backward RIP-relative MOV and indirect CALL, indexed LEA,
 immediate stores, memory comparisons, register extensions, shifts, rotates,
-and scalar and packed AVX moves. ARM64 also checks a disallowed indirect
-target, three memory permission failures, an AVX alignment fault, and the
+and AVX moves and arithmetic. ARM64 also checks a disallowed indirect target,
+three memory permission failures, AVX alignment and MXCSR failures, and the
 real wrapper's UD2 path after an injected service error.
 
 The runner produces `out/cpu-real-nonleaf/verification.json` and a verified
@@ -163,9 +167,25 @@ an AOT guest TLS self-pointer load. It validates the translated
 `libSceFios2` entry against the loaded bytes and dispatches its GOT import
 to the native `scePthreadCondInit` bridge.
 
-Other imports remain guest tokens or guest module addresses. Dynamic TLS,
-generic dispatch, module initializers, and the eboot startup path still
-require translation or runtime coverage before gameplay.
+Pass `--startup` to build and run the hybrid startup probe on the same image:
+
+```sh
+out/cpu-real-tools/bin/python recompiler/run_aot_loader.py --game-dir asset/CUSA03173 --startup
+```
+
+The native executable uses the ARM64 Unicorn static library from the Python
+environment. It executes the libc and libSceFios2 initializers in link order
+and enters eboot, with one validated AOT tail call during libc initialization.
+Unicorn handles guest control flow, and the host bridge dispatches the supported
+imports with checked guest addresses and opaque handle tokens. The probe also
+checks x87 arithmetic and LIFO finalizer callback execution. The boot log is
+`out/cpu-aot-loader/startup.log`. Invoking the binary directly with `--startup`
+returns 2 when it reaches an unimplemented import after entering eboot.
+
+Direct-memory allocation is the current startup boundary. The remaining AVX
+instructions need AOT coverage or another execution path where the installed
+Unicorn rejects them. The hybrid startup probe does not initialize the GPU or
+create guest threads.
 
 The [register-only SIMD/FP increment](CPU_BACKEND_SIMD.md) now passes 53,040,000
 snapshots per AOT backend with zero differences, plus known-answer and rejection

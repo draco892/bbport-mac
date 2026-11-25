@@ -50,6 +50,7 @@ def model(code, record):
                 result = (result - source) & mask
         elif op == 'cmov': result = b if condition(insn.condition, flags) else a
         elif op in SHIFT.values():
+            b &= w - 1
             result = a
             if b:
                 for _ in range(b):

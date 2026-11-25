@@ -5,6 +5,7 @@
  * encode 40-bit addresses, so host-default 0x7f... addresses would not fit. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "direct_memory_limits.h"
 #include "platform.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,12 +23,7 @@
  * patches above 1080p need about 4 GiB more; run.sh sets it). */
 static uint64_t game_pool_bytes(void) {
     static uint64_t size;
-    if (!size) {
-        const char *env = getenv("BB_DMEM_MB");
-        uint64_t mb = env ? strtoull(env, NULL, 10) : 0;
-        if (mb < 5056 || mb > 16384) mb = 5056;
-        size = mb * 1024 * 1024;
-    }
+    if (!size) size = bb_configured_direct_memory_size();
     return size;
 }
 /* bbport: direct memory past the game's size, for the port's own guest allocations

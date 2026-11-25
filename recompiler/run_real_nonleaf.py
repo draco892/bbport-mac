@@ -12,6 +12,7 @@ from audit_real_cpu import digest, function_ranges, mapped_offset
 from cpu_state import c_layout_checks
 from link_modules import module
 from run_state_stack import whole_native_bridge
+from run_simd import VENDOR, softfloat_inputs
 from state_stack_lift import CODE_BASE, decode, lift
 
 ROOT = Path(__file__).resolve().parent
@@ -20,7 +21,7 @@ FUNCTION_OFFSET = 0x2e0d0
 COND_INIT = ('2Tb92quprl0', ('libkernel', 1), ('libkernel', 257))
 RETURN_OFFSET = 0x80000
 RIP_CALL_OFFSET = 0x1000
-RIP_CALLEE_OFFSET = 0x1100
+RIP_CALLEE_OFFSET = 0x1200
 RIP_SLOT_OFFSET = 0x800
 TEST_FLAGS = 0x8c5
 
@@ -111,6 +112,10 @@ def generated_sources(scratch, code, plt, name, call_pc, offsets):
         '49 ba 1122334455667788 '  # movabs r10, 0x8877665544332211
         '41 c1 e2 20 '             # shl r10d, 32 (masked count zero)
         '45 0f b6 da '             # movzx r11d, r10b
+        '48 83 f8 ff b1 40 '      # cmp rax, -1; mov cl, 64
+        '49 d3 ea 72 02 0f0b '     # shr r10, cl; masked zero count preserves CF
+        'b1 41 49 d3 e2 '         # mov cl, 65; shl r10, cl
+        '48 d3 ce '               # ror rsi, cl
         '66 2e 0f1f 8400 00000000 ' # multi-byte NOP
         'c5 fc 28 57 20 '          # vmovaps ymm2, [rdi + 32]
         'c4 e1 7c 11 57 40 '       # vmovups [rdi + 64], ymm2 (three-byte VEX)
@@ -120,6 +125,16 @@ def generated_sources(scratch, code, plt, name, call_pc, offsets):
         'c5 fa 11 97 80000000 '    # vmovss [rdi + 128], xmm2
         'c5 fb 10 57 28 '          # vmovsd xmm2, [rdi + 40]
         'c5 fc 11 97 a0000000 '    # vmovups [rdi + 160], ymm2
+        'c5 fc 10 57 20 '          # vmovups ymm2, [rdi + 32]
+        'c5 ec 58 57 20 '          # vaddps ymm2, ymm2, [rdi + 32]
+        'c5 fc 11 97 c0000000 '    # vmovups [rdi + 192], ymm2
+        'c5 ec 59 57 20 '          # vmulps ymm2, ymm2, [rdi + 32]
+        'c5 ec 5e 57 20 '          # vdivps ymm2, ymm2, [rdi + 32]
+        'c5 ec 5c 57 20 '          # vsubps ymm2, ymm2, [rdi + 32]
+        'c5 fc 11 97 e0000000 '    # vmovups [rdi + 224], ymm2
+        'c5 fb 10 97 00010000 '    # vmovsd xmm2, [rdi + 256]
+        'c5 eb 58 97 00010000 '    # vaddsd xmm2, xmm2, [rdi + 256]
+        'c5 fc 11 97 20010000 '    # vmovups [rdi + 288], ymm2
         '48 83 f8 ff '            # cmp rax, -1
     )
     rip_call = move + call + scalar + b'\xc3'
@@ -173,7 +188,9 @@ def run(game, out):
                         '-o', scratch / 'original'], check=True, timeout=60)
         subprocess.run(['clang', '-arch', 'arm64', '-O2', '-Wno-override-module', '-c',
                         scratch / 'nonleaf.ll', '-o', scratch / 'nonleaf.o'], check=True, timeout=60)
-        subprocess.run(['clang', '-arch', 'arm64', *common, scratch / 'nonleaf.o',
+        vendor = json.loads((VENDOR / 'manifest.json').read_text())
+        subprocess.run(['clang', '-arch', 'arm64', '-std=c11', *softfloat_inputs(vendor),
+                        *common, scratch / 'nonleaf.o', '-Wno-unused-parameter', '-Wno-unused-label',
                         '-o', scratch / 'arm64'], check=True, timeout=60)
         results = {}
         for name, arch in (('original', 'x86_64'), ('arm64', 'arm64')):
@@ -185,7 +202,7 @@ def run(game, out):
             results[name] = proc.stdout
         if results['original'] != results['arm64'] or len(results['original'].splitlines()) != 5:
             raise ValueError('differential snapshot mismatch; inspect stdout logs')
-        if proc.stderr != b'ARM64 checked failures: 6\n':
+        if proc.stderr != b'ARM64 checked failures: 7\n':
             raise ValueError('missing ARM64 fault-check confirmation')
         architecture = subprocess.check_output(['lipo', '-archs', scratch / 'nonleaf.o'],
                                                text=True, timeout=60).strip()
@@ -199,10 +216,10 @@ def run(game, out):
         'offsets': {key.lower(): hex(value) for key, value in offsets.items()},
         'import': {'name': 'scePthreadCondInit', 'identity': COND_INIT},
         'artifact': {'name': artifact.name, 'arch': architecture, 'sha256': digest(artifact.read_bytes())},
-        'matched_real_cases': 4, 'matched_synthetic_cases': 1, 'arm64_fault_cases': 6,
+        'matched_real_cases': 4, 'matched_synthetic_cases': 1, 'arm64_fault_cases': 7,
         'scope': 'bounded isolated fixture with normalized handles and ABI-defined observable state',
     }, indent=2) + '\n')
-    print(f'4 real cases and 1 synthetic case match Rosetta; 6 ARM64 fault cases passed. {report}')
+    print(f'4 real cases and 1 synthetic case match Rosetta; 7 ARM64 fault cases passed. {report}')
 
 
 def main():

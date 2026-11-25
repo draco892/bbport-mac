@@ -4,6 +4,7 @@
 #include "state_regions.h"
 #include "runtime.h"
 #include "aot_entries.h"
+#include "aot_startup.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,10 +15,10 @@
 #error The AOT loader requires native macOS ARM64.
 #endif
 
-#define IMPORT_BASE UINT64_C(0x650000000)
-#define STACK_BASE UINT64_C(0x660000000)
 #define TLS_BASE UINT64_C(0x670000000)
-#define SCRATCH_BASE UINT64_C(0x680000000)
+#define IMPORT_BASE BB_AOT_IMPORT_BASE
+#define STACK_BASE BB_AOT_STACK_BASE
+#define SCRATCH_BASE BB_AOT_SCRATCH_BASE
 
 typedef struct GuestCond GuestCond;
 static BbBootImage boot;
@@ -37,6 +38,7 @@ static uint64_t get64(const void *bytes) {
 }
 
 static void put64(void *bytes, uint64_t value) { memcpy(bytes, &value, sizeof value); }
+static void *allocate_image(size_t size) { return calloc(1, size); }
 
 static unsigned char *checked_span(BbGuestRegions *regions, uint64_t address,
                                    uint64_t size, uint64_t permission) {
@@ -88,7 +90,7 @@ static void relocate(void) {
                 imported_cond = IMPORT_BASE + r->value * 4096;
                 value = imported_cond;
                 ++imports;
-            } else if ((boot.capabilities & 1) && binding) {
+            } else if ((boot.capabilities & 1) && binding && !bb_aot_startup_import(name, r->kind)) {
                 if (boot.binding_kinds[r->value] != r->kind ||
                     !bb_boot_mapped(boot.segments, boot.segment_count, binding, r->addend + 1))
                     fail("linked export kind/range mismatch");
@@ -138,7 +140,7 @@ static void tls_region(BbGuestRegions *regions, uint64_t address, uint64_t files
         regions->thread_pointer = base + aligned;
         size = aligned + 256;
     }
-    unsigned char *bytes = calloc(1, size);
+    unsigned char *bytes = calloc(1, (size + 4095) & ~UINT64_C(4095));
     if (!bytes) fail("cannot allocate initial TLS");
     memcpy(bytes, boot.image + address, filesz);
     if (id == 1) put64(bytes + (regions->thread_pointer - base), regions->thread_pointer);
@@ -149,12 +151,13 @@ static void tls_region(BbGuestRegions *regions, uint64_t address, uint64_t files
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) fail("usage: bb-probe-aot boot-linked.bin");
+    const int startup = argc == 3 && !strcmp(argv[2], "--startup");
+    if (argc != 2 && !startup) fail("usage: bb-probe-aot boot-linked.bin [--startup]");
     int translated = 0;
     size_t flag_size = sizeof translated;
     if (!sysctlbyname("sysctl.proc_translated", &translated, &flag_size, NULL, 0) && translated)
         fail("expected a native ARM64 process");
-    bb_boot_load(&boot, argv[1], 4096, malloc, fail);
+    bb_boot_load(&boot, argv[1], 4096, allocate_image, fail);
     if (!boot.linked || !(boot.capabilities & 1) || boot.module_count != 2 ||
         boot.modules[1].base != AOT_MODULE_BASE || !executable(AOT_OFFSET, sizeof aot_body) ||
         !executable(AOT_PLT, sizeof aot_plt) || !executable(boot.entry, 1) ||
@@ -214,7 +217,7 @@ int main(int argc, char **argv) {
     int32_t (ABI *destroy)(GuestCond **) = (void *)runtime_mutex_resolve("g+PZd2hiacg");
     if (!destroy || destroy(&cond_handle) || cond_handle) fail("condition variable cleanup failed");
     printf("AOT module entry %#" PRIx64 " returned through scePthreadCondInit\n", AOT_OFFSET);
-    printf("Startup pending: module initializers and eboot entry require translated dispatch coverage\n");
+    if (startup) return bb_aot_startup(&boot, &regions);
     return 0;
 }
 

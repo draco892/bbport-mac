@@ -146,6 +146,8 @@ def select_leaves(data, ranges, disassembler, limit, pinned=()):
     pinned = set(pinned)
     ordered = sorted(ranges, key=lambda interval: interval[0] not in pinned) if pinned else ranges
     for address, size, offset in ordered:
+        if address not in pinned and all(len(group) >= limit for group in picks.values()):
+            break
         if not 2 <= size <= 32:
             continue
         raw = bytes(data[offset:offset + size])
@@ -181,8 +183,6 @@ def select_leaves(data, ranges, disassembler, limit, pinned=()):
             continue
         seen.add(raw)
         picks[tier].append((address, raw))
-        if all(len(group) >= limit for group in picks.values()):
-            break
     return picks
 
 

@@ -27,6 +27,10 @@ class Instruction:
     target: int = 0
     memory: object = None
     vector_bytes: int = 16
+    vector_lhs: int = 0
+    vector_rhs: int = 0
+    lane_bits: int = 0
+    scalar: bool = False
 
 
 def decode(code, *, real=False):
@@ -149,7 +153,7 @@ def decode(code, *, real=False):
                                                 amount=64 if rex & 8 else 32, memory=addr))
                 pc = end
                 continue
-        specialized = decode_avx_move(code, pc) if real else None
+        specialized = decode_avx(code, pc) if real else None
         specialized = specialized or decode_extended_memory(code, pc)
         if specialized:
             instructions.append(specialized)
@@ -199,8 +203,8 @@ def decode(code, *, real=False):
     raise ValueError('missing final RET')
 
 
-def decode_avx_move(code, pc):
-    """VEX scalar and packed memory moves in the 0F opcode map."""
+def decode_avx(code, pc):
+    """Selected VEX memory moves and floating-point arithmetic in map 0F."""
     vex = code[pc]
     prefix = 2 if vex == 0xc5 else 3
     opcode = pc + prefix
@@ -213,6 +217,20 @@ def decode_avx_move(code, pc):
     pp = control & 3
     form = code[opcode]
     modrm = code[opcode + 1]
+    reg = ((modrm >> 3) & 7) | ((extension & 4) << 1)
+    if form in (0x58, 0x5c, 0x59, 0x5e):
+        scalar = pp > 1
+        if scalar and control & 4:
+            return None
+        address, end = None, opcode + 2
+        if modrm >> 6 != 3:
+            address, end = decode_address(code, end, modrm, extension, allow_rip=True)
+        return Instruction(pc, code[pc:end], 'avx_fp', reg=reg,
+                           amount=(0x58, 0x5c, 0x59, 0x5e).index(form), memory=address,
+                           vector_bytes=32 if control & 4 else 16,
+                           vector_lhs=(~control >> 3) & 15,
+                           vector_rhs=(modrm & 7) | ((extension & 1) << 3),
+                           lane_bits=64 if pp & 1 else 32, scalar=scalar)
     if (control & 0x78 != 0x78 or
             form not in (0x10, 0x11, 0x28, 0x29) or modrm >> 6 == 3):
         return None
@@ -221,7 +239,7 @@ def decode_avx_move(code, pc):
     address, end = decode_address(code, opcode + 2, modrm, extension, allow_rip=True)
     width = {2: 4, 3: 8}.get(pp, 32 if control & 4 else 16)
     return Instruction(pc, code[pc:end], 'avx_store' if form & 1 else 'avx_load',
-                       reg=((modrm >> 3) & 7) | ((extension & 4) << 1),
+                       reg=reg,
                        amount=width if form in (0x28, 0x29) else 1, memory=address, vector_bytes=width)
 
 
@@ -470,9 +488,9 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                    'declare ptr @bb_regions_select(ptr, ptr, i64, i32)']
     if any(insn.op == 'tls_self' for body in decoded.values() for insn in body):
         module.append('declare i64 @bb_regions_thread_pointer(ptr)')
-    if any(insn.op in ('avx_load', 'avx_store') for body in decoded.values() for insn in body):
+    if any(insn.op in ('avx_load', 'avx_store', 'avx_fp') for body in decoded.values() for insn in body):
         module.append('declare ptr @bb_regions_ymm_high(ptr, i32)')
-    if any(insn.op == 'simd' for body in decoded.values() for insn in body):
+    if any(insn.op in ('simd', 'avx_fp') for body in decoded.values() for insn in body):
         module.append(simd_declarations())
     if any(function.get('host_callbacks') for function in specification.values()):
         module.append('declare void @bb_state_host_callback(ptr, ptr, ptr, i64, ptr, ptr)')
@@ -539,6 +557,21 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                 chosen = emit(f'call ptr @ss_select(ptr %data, ptr %stack, i64 {address}, i1 {"true" if memory.base in (4, 5) else "false"})')
             return address, chosen
 
+        def xmm(reg):
+            return emit(f'getelementptr i8, ptr %state, i64 {xmm_offset(reg)}')
+
+        def ymm_high(reg):
+            return emit(f'call ptr @bb_regions_ymm_high(ptr %data, i32 {reg})')
+
+        def checked_host(address, mapping, right, offset, width, label):
+            ok = emit(f'call i1 @ss_access(ptr %state, ptr {mapping}, i64 {address}, i64 {right}, i64 {offset}, i64 {width})')
+            lines.extend([f'  br i1 {ok}, label %{label}, label %halt', f'{label}:'])
+            baseptr = emit(f'getelementptr i8, ptr {mapping}, i64 8')
+            base = emit(f'load i64, ptr {baseptr}')
+            buffer = emit(f'load ptr, ptr {mapping}')
+            delta = emit(f'sub i64 {address}, {base}')
+            return emit(f'getelementptr i8, ptr {buffer}, i64 {delta}')
+
         lines.append('  br label %guest0')
         for insn in instructions:
             offset = functions[name]['address'] + insn.pc
@@ -589,19 +622,52 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                 helper = f'ss_{name}_simd_{insn.pc}'
                 module.append(lift_simd(insn.raw + b'\xc3', helper, integer_only=True))
                 lines.append(f'  call void @{helper}(ptr %state)')
+            elif insn.op == 'avx_fp':
+                mxptr = emit(f'getelementptr i8, ptr %state, i64 {OFFSETS["mxcsr"]}')
+                mx = emit(f'load i32, ptr {mxptr}, align 1')
+                masked = emit(f'and i32 {mx}, {0xffff0000 | 0x1f80}')
+                valid = emit(f'icmp eq i32 {masked}, 8064')
+                lines += [f'  br i1 {valid}, label %avx{insn.pc}, label %bad_mxcsr{insn.pc}',
+                          f'bad_mxcsr{insn.pc}:', f'  store i32 10, ptr {status}, align 1',
+                          '  ret void', f'avx{insn.pc}:']
+                if insn.memory is not None:
+                    address, mapping = locate(insn.memory, next_pc)
+                    size = insn.lane_bits // 8 if insn.scalar else insn.vector_bytes
+                    right = checked_host(address, mapping, 1, offset, size, f'avx_memory{insn.pc}')
+                else:
+                    right = xmm(insn.vector_rhs)
+                lane = insn.lane_bits
+                ty = f'<{128 // lane} x i{lane}>'
+
+                def emit_half(lhs, rhs, dest):
+                    a = emit(f'load {ty}, ptr {lhs}, align 1')
+                    value = a
+                    if insn.scalar:
+                        b = emit(f'load i{lane}, ptr {rhs}, align 1')
+                    else:
+                        b = emit(f'load {ty}, ptr {rhs}, align 1')
+                    for i in range(1 if insn.scalar else 128 // lane):
+                        ax = emit(f'extractelement {ty} {a}, i32 {i}')
+                        bx = b if insn.scalar else emit(f'extractelement {ty} {b}, i32 {i}')
+                        item = emit(f'call i{lane} @bb_fp{lane}(i{lane} {ax}, i{lane} {bx}, i32 {insn.amount}, ptr {mxptr})')
+                        value = emit(f'insertelement {ty} {value}, i{lane} {item}, i32 {i}')
+                    lines.append(f'  store {ty} {value}, ptr {dest}, align 1')
+
+                emit_half(xmm(insn.vector_lhs), right, xmm(insn.reg))
+                high = ymm_high(insn.reg)
+                if insn.vector_bytes == 32:
+                    rhs = (emit(f'getelementptr i8, ptr {right}, i64 16') if insn.memory is not None
+                           else ymm_high(insn.vector_rhs))
+                    emit_half(ymm_high(insn.vector_lhs), rhs, high)
+                else:
+                    lines.append(f'  store i128 0, ptr {high}, align 1')
             elif insn.op in ('vector_load', 'vector_store', 'avx_load', 'avx_store', 'exchange'):
                 address, chosen = locate(insn.memory, next_pc)
                 atomic = insn.op == 'exchange'
                 load = insn.op in ('vector_load', 'avx_load')
                 width = 8 if atomic else insn.vector_bytes
                 right = 3 if atomic else 1 if load else 2
-                ok = emit(f'call i1 @ss_access(ptr %state, ptr {chosen}, i64 {address}, i64 {right}, i64 {offset}, i64 {width})')
-                lines += [f'  br i1 {ok}, label %mapped{insn.pc}, label %halt', f'mapped{insn.pc}:']
-                baseptr = emit(f'getelementptr i8, ptr {chosen}, i64 8')
-                base = emit(f'load i64, ptr {baseptr}')
-                buffer = emit(f'load ptr, ptr {chosen}')
-                delta = emit(f'sub i64 {address}, {base}')
-                host = emit(f'getelementptr i8, ptr {buffer}, i64 {delta}')
+                host = checked_host(address, chosen, right, offset, width, f'mapped{insn.pc}')
                 if insn.amount > 1:
                     bits = address
                     if atomic:

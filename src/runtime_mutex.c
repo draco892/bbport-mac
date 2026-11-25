@@ -8,8 +8,8 @@
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
-typedef struct { int type; } GuestAttr;
-typedef struct { pthread_mutex_t native; } GuestMutex;
+typedef struct GuestAttr { int type; } GuestAttr;
+typedef struct GuestMutex { pthread_mutex_t native; } GuestMutex;
 static size_t created, locks, unlocks;
 static int32_t orbis_error(int e) {
     if (!e) return 0;

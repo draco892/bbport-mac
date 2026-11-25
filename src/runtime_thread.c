@@ -63,7 +63,10 @@ void runtime_set_main_tls(const void *data,uint64_t filesz,uint64_t memsz,uint64
     tls_template=data; tls_filesz=filesz; tls_memsz=memsz; tls_align=align ? align : 16;
 }
 static uint64_t tls_offset(void) { return (tls_memsz+tls_align-1)&~(tls_align-1); }
-#ifdef __APPLE__
+#if defined(__APPLE__) && defined(__aarch64__)
+/* ARM64 guest engines hold the x86 segment bases in guest state. */
+static void set_gs(void *base) { (void)base; }
+#elif defined(__APPLE__)
 /* macOS (x86-64, also under Rosetta 2): user code cannot set the FS or GS base, but GS
  * already points at each thread's pthread TSD array, so `mov rax, gs:[key*8]` reads
  * pthread_getspecific(key). The guest's `mov rax, fs:[0]` (tcb_self) becomes exactly that:

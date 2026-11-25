@@ -2,7 +2,8 @@
  * GPR indices follow x86 encoding order: RAX, RCX, RDX, RBX, RSP, RBP,
  * RSI, RDI, R8..R15. A stored field does not imply execution support.
  * RIP denotes an explicit guest address; SIMD leaves preserve it.
- * x87/AVX, segment bases and exception delivery are outside this ABI. */
+ * Upper YMM halves and guest TLS for mapped AOT entries live in BbGuestRegions.
+ * x87 and exception delivery are outside this ABI. */
 #ifndef BB_EXPERIMENT_CPU_STATE_H
 #define BB_EXPERIMENT_CPU_STATE_H
 #include <stdint.h>

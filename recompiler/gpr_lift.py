@@ -106,12 +106,12 @@ def decode(code):
                 raise ValueError('unsupported extension operands')
             instructions.append(Instruction(op, reg, rm, width, source_width=source))
             continue
-        if opcode in (0xc1, 0xd1):
+        if opcode in (0xc1, 0xd1, 0xd3):
             op = SHIFT.get(reg)
             if not op or width not in (32, 64):
                 raise ValueError('unsupported shift/rotate form')
-            count = 1 if opcode == 0xd1 else read_immediate(1) & (width - 1)
-            instructions.append(Instruction(op, rm, rm, width, immediate=count))
+            count = None if opcode == 0xd3 else (1 if opcode == 0xd1 else read_immediate(1) & (width - 1))
+            instructions.append(Instruction(op, rm, 1 if count is None else rm, width, immediate=count))
             continue
         if opcode in (0x80, 0x81, 0x83, 0xc6, 0xc7, 0xf6, 0xf7):
             extension = (modrm >> 3) & 7
@@ -152,6 +152,9 @@ def defined_flags(code, mask=ARITHMETIC_FLAGS):
     """Final architecturally defined arithmetic bits."""
     for insn in decode(code):
         if insn.op in SHIFT.values():
+            if insn.immediate is None:
+                mask &= ~0x800 if insn.op in ROTATE else ~0x810
+                continue
             if not insn.immediate: continue
             if insn.op not in ROTATE:
                 mask = ARITHMETIC_FLAGS & ~0x10
@@ -183,9 +186,10 @@ def lift_instructions(instructions, name, *, memory_operand=None):
                 or (insn.immediate is not None and
                     (type(insn.immediate) is not int or insn.op not in (*GROUP1, *SHIFT.values(), 'mov', 'test')))):
             raise ValueError('unsupported scalar IR contract')
-        if insn.op in SHIFT.values() and (insn.width not in (32, 64) or insn.immediate is None
-                                         or not 0 <= insn.immediate < insn.width):
-            raise ValueError('invalid static shift count')
+        if insn.op in SHIFT.values() and (insn.width not in (32, 64) or
+                (insn.immediate is None and insn.src != 1) or
+                (insn.immediate is not None and not 0 <= insn.immediate < insn.width)):
+            raise ValueError('invalid shift operand')
         if insn.op in ('movsx', 'movzx') and (insn.source_width not in (8, 16, 32)
                                               or insn.source_width >= insn.width):
             raise ValueError('invalid move extension width')
@@ -264,33 +268,42 @@ def lift_instructions(instructions, name, *, memory_operand=None):
         elif op in SHIFT.values():
             count = insn.immediate
             result = a
-            if count:
+            if count is None:
+                # All shift amounts must be in range even when the masked count is zero.
+                count = emit(f'and {ty} {b}, {w - 1}')
+                zero = emit(f'icmp eq {ty} {count}, 0')
+                one = emit(f'icmp eq {ty} {count}, 1')
+                back = emit(f'and {ty} {emit(f"sub {ty} 0, {count}")}, {w - 1}')
+                prev = emit(f'and {ty} {emit(f"sub {ty} {count}, 1")}, {w - 1}')
+            elif count:
+                zero, one = 'false', 'true' if count == 1 else 'false'
+                back, prev = w - count, count - 1
+            if count != 0:
                 def bit_at(value, bit):
                     shifted = emit(f'lshr {ty} {value}, {bit}')
                     return emit(f'trunc {ty} {shifted} to i1')
 
                 if op in ROTATE:
-                    left = count if op == 'rol' else w - count
+                    left, right = (count, back) if op == 'rol' else (back, count)
                     high = emit(f'shl {ty} {a}, {left}')
-                    low = emit(f'lshr {ty} {a}, {w - left}')
+                    low = emit(f'lshr {ty} {a}, {right}')
                     result = emit(f'or {ty} {high}, {low}')
                     carry = bit_at(result, 0 if op == 'rol' else w - 1)
-                    overflow = 'false'
-                    if count == 1:
-                        first, second = (bit_at(result, w - 1), carry) if op == 'rol' else (carry, bit_at(result, w - 2))
-                        overflow = emit(f'xor i1 {first}, {second}')
-                    flags = update_flags(((carry, 0), (overflow, 11)))
+                    first, second = (bit_at(result, w - 1), carry) if op == 'rol' else (carry, bit_at(result, w - 2))
+                    overflow = emit(f'and i1 {one}, {emit(f"xor i1 {first}, {second}")}')
+                    updated = update_flags(((carry, 0), (overflow, 11)))
                 else:
                     shift = {'shl': 'shl', 'shr': 'lshr', 'sar': 'ashr'}[op]
                     result = emit(f'{shift} {ty} {a}, {count}')
-                    carry = bit_at(a, w - count if op == 'shl' else count - 1)
+                    carry = bit_at(a, back if op == 'shl' else prev)
                     overflow = 'false'
-                    if count == 1:
-                        if op == 'shl':
-                            overflow = emit(f'xor i1 {bit_at(result, w - 1)}, {carry}')
-                        elif op == 'shr':
-                            overflow = bit_at(a, w - 1)
-                    flags = update_flags(((carry, 0), ('false', 4), (overflow, 11), *flags_zsp(result, w)))
+                    if op == 'shl':
+                        overflow = emit(f'xor i1 {bit_at(result, w - 1)}, {carry}')
+                    elif op == 'shr':
+                        overflow = bit_at(a, w - 1)
+                    overflow = emit(f'and i1 {one}, {overflow}')
+                    updated = update_flags(((carry, 0), ('false', 4), (overflow, 11), *flags_zsp(result, w)))
+                flags = emit(f'select i1 {zero}, i64 {flags}, i64 {updated}')
         else:
             if op in ('inc', 'dec'):
                 b = '1'

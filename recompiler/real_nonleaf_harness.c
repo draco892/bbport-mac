@@ -100,7 +100,7 @@ void bb_state_host_import(BbCpuState *state, BbGuestRegions *table, uint64_t tar
 static BbCpuState input(uint64_t argument, unsigned offset, unsigned char *stack) {
     memset(stack, 0xa5, 512);
     put64(stack + 504, RETURN_ADDRESS);
-    BbCpuState cpu = {.rip = IMAGE_BASE + offset, .rflags = 0x202};
+    BbCpuState cpu = {.rip = IMAGE_BASE + offset, .rflags = 0x202, .mxcsr = 0x1f80};
     for (unsigned i = 0; i < 16; ++i)
         cpu.gpr[i] = UINT64_C(0x8123456789abcdef) ^ (argument + i);
     cpu.gpr[4] = STACK + 504;
@@ -117,7 +117,7 @@ static void check_return(const BbCpuState *before, const BbCpuState *after) {
 }
 
 int main(void) {
-    unsigned char local_data[192], local_stack[512];
+    unsigned char local_data[320], local_stack[512];
     unsigned char *data = local_data, *stack = local_stack;
     unsigned char name[sizeof module_name];
     memcpy(name, module_name, sizeof name);
@@ -176,8 +176,11 @@ int main(void) {
                get64(data + 8), get64(stack + 488), get64(stack + 496), get64(stack + 504));
     }
 
-    for (unsigned i = 32; i < 64; ++i) data[i] = (unsigned char)(3 * i);
+    const float packed[] = {1, -2, 3.5f, -4.75f, 5, -6, 7.5f, 8.25f};
+    const float doubled[] = {2, -4, 7, -9.5f, 10, -12, 15, 16.5f};
+    memcpy(data + 32, packed, sizeof packed);
     memset(data + 64, 0xa5, sizeof local_data - 64);
+    put64(data + 256, UINT64_C(0x4010000000000000)); /* f64 4.0 */
     const BbCpuState before = input(0, RIP_CALL_OFFSET, stack);
     BbCpuState cpu = before;
 #ifdef ORIGINAL
@@ -188,14 +191,17 @@ int main(void) {
     check_return(&before, &cpu);
     assert(cpu.gpr[0] == (get64(slot) ^ UINT64_C(0xffffffffffffff80)));
     assert(cpu.gpr[8] == UINT64_C(0xfedcba97f6543210) && cpu.gpr[9] == UINT64_C(0x62fc962f));
-    assert(cpu.gpr[1] == 1 && cpu.gpr[2] == UINT64_MAX && cpu.gpr[6] == 2 &&
-           cpu.gpr[10] == UINT64_C(0x44332211) && cpu.gpr[11] == 0x11 && get64(data) == UINT64_MAX);
+    assert(cpu.gpr[1] == 0x41 && cpu.gpr[2] == UINT64_MAX && cpu.gpr[6] == 1 &&
+           cpu.gpr[10] == UINT64_C(0x88664422) && cpu.gpr[11] == 0x11 && get64(data) == UINT64_MAX);
     assert(get64(stack + 496) == IMAGE_BASE + RIP_CALL_OFFSET + 13);
     const unsigned char zero[24] = {0};
     assert(!memcmp(data + 64, data + 32, 32) && !memcmp(data + 96, data + 32, 16));
     assert(!memcmp(data + 112, zero, 16));
     assert(!memcmp(data + 128, data + 32, 4) && data[132] == 0xa5);
     assert(!memcmp(data + 160, data + 40, 8) && !memcmp(data + 168, zero, sizeof zero));
+    assert(!memcmp(data + 192, doubled, sizeof doubled));
+    assert(!memcmp(data + 224, packed, sizeof packed));
+    assert(get64(data + 288) == UINT64_C(0x4020000000000000) && !memcmp(data + 296, zero, sizeof zero));
     printf("rip_call rax=%" PRIx64 " r8=%" PRIx64 " r9=%" PRIx64 " flags=%" PRIx64 " return=%" PRIx64 "\n",
            cpu.gpr[0], cpu.gpr[8], cpu.gpr[9], cpu.rflags & FLAGS, get64(stack + 496));
 
@@ -205,6 +211,10 @@ int main(void) {
     cpu.gpr[7] = DATA + 1;
     entry_rip_call(&cpu, &table, &stack_region);
     assert(cpu.status == 8 && regions[0].fault_address == DATA + 33);
+    cpu = input(0, RIP_CALL_OFFSET, stack);
+    cpu.mxcsr &= ~0x80;
+    entry_rip_call(&cpu, &table, &stack_region);
+    assert(cpu.status == 10 && cpu.mxcsr == 0x1f00);
     put64(slot + 8, IMAGE_BASE + RIP_CALLEE_OFFSET + 1);
     cpu = input(0, RIP_CALL_OFFSET, stack);
     entry_rip_call(&cpu, &table, &stack_region);
@@ -232,7 +242,7 @@ int main(void) {
     calls = 0;
     entry_fios_cond(&cpu, &table, &stack_region);
     assert(cpu.status == 3 && cpu.rip == IMAGE_BASE + STORE_OFFSET && !calls && get64(data + 8) == 42);
-    fputs("ARM64 checked failures: 6\n", stderr);
+    fputs("ARM64 checked failures: 7\n", stderr);
 #endif
     return 0;
 }

@@ -27,6 +27,14 @@ def sha(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def softfloat_inputs(vendor):
+    return ['-DSOFTFLOAT_FAST_INT64', '-DINLINE_LEVEL=5', '-DSOFTFLOAT_FAST_DIV32TO16',
+            '-DSOFTFLOAT_FAST_DIV64TO32', '-DTHREAD_LOCAL=_Thread_local',
+            '-I', VENDOR / 'build/Linux-x86_64-GCC',
+            '-I', VENDOR / 'source/8086-SSE', '-I', VENDOR / 'source/include',
+            ROOT / 'simd_fp.c', *(VENDOR / source for source in vendor['sources'])]
+
+
 def load_fixtures():
     fixtures = json.loads((ROOT / 'simd_fixtures.json').read_text())
     extended = json.loads((ROOT / 'simd_register_fixtures.json').read_text())
@@ -360,13 +368,7 @@ def main():
             if label.startswith('original'):
                 argv += ['-DORIGINAL', out / 'original.s']
             else:
-                argv += ['-DSOFTFLOAT_FAST_INT64', '-DINLINE_LEVEL=5',
-                         '-DSOFTFLOAT_FAST_DIV32TO16', '-DSOFTFLOAT_FAST_DIV64TO32',
-                         '-DTHREAD_LOCAL=_Thread_local',
-                         '-I', VENDOR / 'build/Linux-x86_64-GCC',
-                         '-I', VENDOR / 'source/8086-SSE', '-I', VENDOR / 'source/include',
-                         ROOT / 'simd_fp.c', out / 'simd.ll']
-                argv += [VENDOR / source for source in vendor['sources']]
+                argv += [*softfloat_inputs(vendor), out / 'simd.ll']
             exe = out / label
             command(label + '-build', argv + ['-o', exe])
             outputs[label] = command(label + '-run', ['/usr/bin/arch', '-' + arch, exe],
