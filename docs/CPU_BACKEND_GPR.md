@@ -14,21 +14,22 @@ remain bitwise unchanged; status becomes zero. RSP and RDI are ordinary guest
 integers. Guest register values are never cast into native pointers or used as
 the ARM64 host stack. RIP is preserved by this synthetic leaf contract.
 
-Supported operations, in 32- and 64-bit register forms:
+Supported operations in 8-, 16-, 32- and 64-bit register forms unless specified:
 
 - MOV, ADD, ADC, SUB, SBB, AND, OR, XOR, CMP and TEST.
 - INC and DEC, preserving the incoming CF while updating other arithmetic flags.
-- All sixteen CMOVcc conditions, consuming explicit guest CF/PF/ZF/SF/OF.
+- All sixteen CMOVcc conditions in 16-, 32- and 64-bit forms, consuming explicit guest CF/PF/ZF/SF/OF.
 - Canonical REX.W/R/B selection of all GPRs, including R8–R15 and RSP.
 - Straight-line instruction sequences, ending in one synthetic RET marker.
 
-All 32-bit destination writes zero-extend into the full guest register. CMP and
+Byte and word writes preserve the upper destination bits. High byte AH/CH/DH/BH
+forms are excluded. All 32-bit destination writes zero-extend into the full guest register. CMP and
 TEST do not write their destination at all. A 32-bit CMOV zeroes the upper half
 even when the condition is false; this is explicitly tested against actual x86.
 
 CF, PF, AF, ZF, SF and OF are modeled as explicit integer bits. LLVM integer
 operations do not rely on host condition codes. ADD/ADC/SUB/SBB compute carries
-and borrows in 33/65-bit intermediates; arithmetic has no `nsw`/`nuw` assumptions.
+and borrows in 9/17/33/65-bit intermediates; arithmetic has no `nsw`/`nuw` assumptions.
 Parity observes the low byte only. ADC/SBB consume incoming guest CF, and the
 compound fixtures verify propagation between different registers.
 
@@ -39,7 +40,7 @@ the current flag state, and a later arithmetic instruction can define AF again.
 Non-arithmetic RFLAGS bits are opaque preserved storage: this does not implement
 DF/TF, privilege controls, traps or flag-loading instructions.
 
-Unsupported byte/word operations, alternate opcode encodings, shifts, NEG,
+Unsupported high-byte operations, alternate opcode encodings, shifts, NEG,
 multiply/divide, flag transfer, SETcc, branches, calls, memory operands, repeated
 or noncanonical prefixes and trailing code fail closed. Some rejected encodings
 are valid x86; rejection only describes the bounded experiment's contract.
@@ -82,13 +83,13 @@ incomplete, failures are marked failed, and success requires all checks below.
 
 | Check | Result |
 | --- | --- |
-| Fixtures | 1,720, including all 512 MOV register/width pairs and 56 compound sequences |
+| Fixtures | 1,976, including 256 new 8/16-bit fixtures, all 512 original MOV pairs and 56 compound sequences |
 | Input states | 5,718 |
-| Original x86 vs AOT x86-64 | 9,834,960 complete snapshots, zero differences |
-| Original x86 vs AOT ARM64 | 9,834,960 complete snapshots, zero differences |
+| Original x86 vs AOT x86-64 | 11,298,768 complete snapshots, zero differences |
+| Original x86 vs AOT ARM64 | 11,298,768 complete snapshots, zero differences |
 | Native ARM64 UBSan | Same complete corpus passed, no differences or sanitizer findings |
 | Explicit literal answers | 22 passed per executable |
-| Independent Python integer model | 718,960 selected complete snapshots passed |
+| Independent Python integer model | 825,968 selected complete snapshots passed |
 | Combined CPU acceptance/rejection/layout test suite, including memory and stack | 89 passed |
 
 The corpus includes all pairs from sixteen integer edges under four initial flag

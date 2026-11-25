@@ -283,15 +283,15 @@ python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
 python3 recompiler/run_gpr.py --sanitize
 ```
 
-This mode executes 32/64-bit MOV, ADD/ADC, SUB/SBB, logical operations, CMP/TEST,
+This mode executes 8/16/32/64-bit MOV, ADD/ADC, SUB/SBB, logical operations, CMP/TEST,
 INC/DEC and all sixteen CMOVcc conditions using the same `BbCpuState` as SIMD.
 All sixteen GPRs (including RSP as an integer) and the six arithmetic flags are
-observable; other state is preserved. Byte/word operations, memory, branches,
+observable; other state is preserved. High-byte AH/CH/DH/BH operations, memory, branches,
 calls and general flag semantics remain outside this bounded mode. Undefined
 logical AF is explicitly normalized rather than asserted as architectural output.
 
-The default corpus passes **1,720 fixtures × 5,718 states = 9,834,960 snapshots
-per AOT backend**, with zero differences, 22 explicit answers and 718,960
+The default corpus passes **1,976 fixtures × 5,718 states = 11,298,768 snapshots
+per AOT backend**, with zero differences, 22 explicit answers and 825,968
 independently modeled snapshots. Native ARM64 UBSan passes the same corpus.
 The combined CPU test suite passes 89 tests. Complete outputs with matching
 hashes are archived once, with a verified gzip round trip before removing raw
@@ -389,3 +389,49 @@ Host callback paths are compared with the model using a real synchronous C
 adapter on each translated backend. Artifacts and verification reports are
 written under `out/recompiler-state-control/`. The game runtime still uses its
 existing CPU backend.
+
+## Mixed SIMD, region tables and checked atomic operations
+
+```sh
+python3 recompiler/run_state_mixed.py --sanitize
+python3 recompiler/run_gpr.py --sanitize
+```
+
+The common stack translator can execute its packed-integer SSE2 subset between
+checked MOVDQU/MOVDQA loads and stores. Operands can address any XMM register.
+Each 16-byte access must fit in one mapping, MOVDQA checks guest alignment,
+and integer SIMD preserves guest MXCSR. Packed floating-point conversion,
+comparison and arithmetic in mixed code remain outside this increment.
+
+The mapped entry ABI takes a `BbGuestRegions` table and a separate stack.
+It accepts up to 64 sorted, nonoverlapping data regions of up to 1 MiB each.
+It validates all descriptors before guest execution and uses binary search for
+data addresses. Unmapped addresses get a dedicated fault record. The host owns
+the buffers and keeps them alive for each invocation. Accesses that span two
+mappings are rejected even if the mappings are adjacent. The runtime game loader
+still needs a guest address-space integration.
+
+The scalar path now supports byte and word forms of its register arithmetic
+and MOV, with partial-write preservation. Word CMOV is available. The byte
+register forms cover AL through R15B with canonical REX selection. AH, CH, DH
+and BH, additional opcodes, and full flag coverage remain open.
+
+The bounded atomic subset includes naturally aligned 64-bit memory XCHG,
+lowered to a sequentially consistent atomic exchange, and MFENCE, lowered to
+a sequentially consistent fence. XCHG requires both read and write permission
+and preserves guest flags. The concurrent test gives each thread separate CPU
+and descriptor state while sharing one aligned guest cell. Concurrent accesses
+to that cell use the atomic path. This subset does not establish general x86
+memory ordering for ordinary loads or stores.
+
+Bounds and permission checks precede the mixed path's alignment check.
+Status 8 records a rejected alignment and its guest address. UD2 returns status
+9, preserves the active guest RIP, and propagates through translated calls.
+These are checked faults in the synthetic executor. Signal delivery, x86
+exception frames, unwinding, and recovery in the game runtime remain open.
+
+The mixed runner compares a load/packed-add/store sequence with original SSE2
+on x86-64, checks directed success/failure snapshots on all builds, and checks
+4,096 concurrent exchanges per build. It runs translated x86-64, native ARM64,
+and optionally native ARM64 with UBSan. Its report and generated IR are in
+`out/recompiler-state-mixed/`.

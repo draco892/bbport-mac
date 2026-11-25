@@ -1,10 +1,12 @@
 """Bounded control flow, calls and explicit guest stack in CPU-state ABI v1."""
 from dataclasses import dataclass
-from cpu_state import OFFSETS
+from cpu_state import OFFSETS, xmm_offset
 from gpr_lift import (decode as decode_gpr, lift as lift_gpr, lift_instructions,
                       Instruction as ScalarInstruction, DECLARATIONS)
 from state_memory_lift import decode as decode_memory, lift as lift_memory
 from stack_lift import assemble
+from simd_lift import (decode as decode_simd, lift as lift_simd,
+                       declarations as simd_declarations, FP_IDS)
 
 CODE_BASE = 0x600000000
 ROOT_RETURN = CODE_BASE + 0x10000
@@ -102,8 +104,32 @@ def decode(code):
                                             amount=amount if code[pc + 2] == 0xc4 else -amount))
             pc += size
             continue
+        if code[pc:pc + 2] in (b'\x0f\x0b', b'\x0f\xae') and (
+                code[pc + 1] == 0x0b or code[pc:pc + 3] == b'\x0f\xae\xf0'):
+            op = 'ud2' if code[pc + 1] == 0x0b else 'fence'
+            end = pc + (2 if op == 'ud2' else 3)
+            instructions.append(Instruction(pc, code[pc:end], op))
+            pc = end
+            continue
+        specialized = decode_extended_memory(code, pc)
+        if specialized:
+            instructions.append(specialized)
+            pc += len(specialized.raw)
+            continue
+        for size in range(3, 7):
+            raw = code[pc:pc + size]
+            if len(raw) != size: continue
+            try:
+                vector = decode_simd(raw + b'\xc3')
+            except ValueError:
+                continue
+            if len(vector) == 1 and vector[0].op not in FP_IDS:
+                instructions.append(Instruction(pc, raw, 'simd'))
+                pc += size
+                break
+        if pc != start: continue
         found = False
-        for size in range(2, 5):
+        for size in range(2, 6):
             raw = code[pc:pc + size]
             if len(raw) != size: continue
             try:
@@ -130,6 +156,39 @@ def decode(code):
                 break
         if not found: raise ValueError(f'unsupported stack instruction at {start:#x}')
     raise ValueError('missing final RET')
+
+
+def decode_extended_memory(code, pc):
+    """Reuse the scalar MOV address decoder without rewriting guest state."""
+    start = pc
+    prefix = code[pc]
+    if prefix in (0x66, 0xf3):
+        pc += 1
+        rex = code[pc] if pc < len(code) and 0x40 <= code[pc] <= 0x4f else 0
+        pc += bool(rex)
+        opcode = code[pc:pc + 2]
+        if rex & 8 or opcode not in (b'\x0f\x6f', b'\x0f\x7f'):
+            return None
+        operation = 'vector_load' if opcode[-1] == 0x6f else 'vector_store'
+        modrm = pc + 2
+        alignment = 16 if prefix == 0x66 else 1
+    else:
+        rex = prefix if 0x40 <= prefix <= 0x4f else 0
+        pc += bool(rex)
+        if not rex & 8 or code[pc:pc + 1] != b'\x87':
+            return None
+        operation, modrm, alignment = 'exchange', pc + 1, 8
+    if modrm >= len(code) or code[modrm] >> 6 == 3:
+        return None
+    for end in range(modrm + 1, min(len(code), modrm + 6) + 1):
+        fake = bytes((0x48 | (rex & 7), 0x8b)) + code[modrm:end] + b'\xc3'
+        try:
+            operand, = decode_memory(fake)
+        except ValueError:
+            continue
+        return Instruction(start, code[start:end], operation, reg=operand.reg,
+                           amount=alignment, memory=operand)
+    raise ValueError('unsupported vector/atomic memory operand')
 
 
 def analyze(specification):
@@ -233,7 +292,7 @@ define i1 @ss_valid(ptr %map, i64 %limit) {
  %valid = and i1 %v0, %v1
  ret i1 %valid
 }
-define i1 @ss_access(ptr %state, ptr %map, i64 %address, i64 %right, i64 %pc) {
+define i1 @ss_access(ptr %state, ptr %map, i64 %address, i64 %right, i64 %pc, i64 %width) {
  %bp = getelementptr i8, ptr %map, i64 8
  %np = getelementptr i8, ptr %map, i64 16
  %rp = getelementptr i8, ptr %map, i64 24
@@ -242,8 +301,8 @@ define i1 @ss_access(ptr %state, ptr %map, i64 %address, i64 %right, i64 %pc) {
  %rights = load i64, ptr %rp
  %offset = sub i64 %address, %base
  %above = icmp uge i64 %address, %base
- %enough = icmp uge i64 %size, 8
- %last = sub i64 %size, 8
+ %enough = icmp uge i64 %size, %width
+ %last = sub i64 %size, %width
  %fits = icmp ule i64 %offset, %last
  %b0 = and i1 %above, %enough
  %bounded = and i1 %b0, %fits
@@ -254,7 +313,7 @@ bounds:
  br label %fault
 permission:
  %present = and i64 %rights, %right
- %allowed = icmp ne i64 %present, 0
+ %allowed = icmp eq i64 %present, %right
  br i1 %allowed, label %ok, label %denied
 denied:
  %status3 = getelementptr i8, ptr %state, i64 404
@@ -270,7 +329,7 @@ ok:
  ret i1 true
 }
 define i64 @ss_read(ptr %state, ptr %map, i64 %address, i64 %pc) {
- %ok = call i1 @ss_access(ptr %state, ptr %map, i64 %address, i64 1, i64 %pc)
+ %ok = call i1 @ss_access(ptr %state, ptr %map, i64 %address, i64 1, i64 %pc, i64 8)
  br i1 %ok, label %read, label %failed
 read:
  %basep = getelementptr i8, ptr %map, i64 8
@@ -284,7 +343,7 @@ failed:
  ret i64 0
 }
 define void @ss_write(ptr %state, ptr %map, i64 %address, i64 %value, i64 %pc) {
- %ok = call i1 @ss_access(ptr %state, ptr %map, i64 %address, i64 2, i64 %pc)
+ %ok = call i1 @ss_access(ptr %state, ptr %map, i64 %address, i64 2, i64 %pc, i64 8)
  br i1 %ok, label %write, label %failed
 write:
  %basep = getelementptr i8, ptr %map, i64 8
@@ -322,9 +381,14 @@ define ptr @ss_select(ptr %data, ptr %stack, i64 %address, i1 %stack_fallback) {
 '''
 
 
-def lift(specification):
+def lift(specification, *, mapped=False):
     functions, decoded, calls, costs = analyze(specification)
     module = [DECLARATIONS, support_ir()]
+    if mapped:
+        module += ['declare i32 @bb_regions_prepare(ptr, ptr)',
+                   'declare ptr @bb_regions_select(ptr, ptr, i64, i32)']
+    if any(insn.op == 'simd' for body in decoded.values() for insn in body):
+        module.append(simd_declarations())
     if any(function.get('host_callbacks') for function in specification.values()):
         module.append('declare void @bb_state_host_callback(ptr, ptr, ptr, i64, ptr, ptr)')
     for name, instructions in decoded.items():
@@ -380,7 +444,10 @@ def lift(specification):
             if memory.index is not None:
                 scaled = emit(f'mul i64 {read(memory.index)}, {memory.scale}')
                 address = emit(f'add i64 {address}, {scaled}')
-            chosen = emit(f'call ptr @ss_select(ptr %data, ptr %stack, i64 {address}, i1 {"true" if memory.base in (4, 5) else "false"})')
+            if mapped:
+                chosen = emit(f'call ptr @bb_regions_select(ptr %data, ptr %stack, i64 {address}, i32 {int(memory.base in (4, 5))})')
+            else:
+                chosen = emit(f'call ptr @ss_select(ptr %data, ptr %stack, i64 {address}, i1 {"true" if memory.base in (4, 5) else "false"})')
             return address, chosen
 
         lines.append('  br label %guest0')
@@ -408,7 +475,7 @@ def lift(specification):
             elif insn.op == 'memory':
                 _, chosen = locate(insn.memory)
                 helper = f'ss_{name}_memory_{insn.pc}'
-                module.append(lift_memory(insn.raw + b'\xc3', helper, max_bytes=STACK_BYTES))
+                module.append(lift_memory(insn.raw + b'\xc3', helper, max_bytes=1048576 if mapped else STACK_BYTES))
                 lines.append(f'  call void @{helper}(ptr %state, ptr {chosen})')
                 value = emit(f'load i32, ptr {status}, align 1')
                 good = emit(f'icmp eq i32 {value}, 0')
@@ -416,6 +483,49 @@ def lift(specification):
                 lines.extend([f'  br i1 {good}, label %{label}, label %memory_fault{insn.pc}', f'memory_fault{insn.pc}:'])
                 fault = emit(f'getelementptr i8, ptr {chosen}, i64 40')
                 lines += [f'  store i64 {offset}, ptr {fault}', '  ret void', f'{label}:']
+            elif insn.op == 'simd':
+                helper = f'ss_{name}_simd_{insn.pc}'
+                module.append(lift_simd(insn.raw + b'\xc3', helper, integer_only=True))
+                lines.append(f'  call void @{helper}(ptr %state)')
+            elif insn.op in ('vector_load', 'vector_store', 'exchange'):
+                address, chosen = locate(insn.memory)
+                atomic = insn.op == 'exchange'
+                width = 8 if atomic else 16
+                right = 3 if atomic else 1 if insn.op == 'vector_load' else 2
+                ok = emit(f'call i1 @ss_access(ptr %state, ptr {chosen}, i64 {address}, i64 {right}, i64 {offset}, i64 {width})')
+                lines += [f'  br i1 {ok}, label %mapped{insn.pc}, label %halt', f'mapped{insn.pc}:']
+                baseptr = emit(f'getelementptr i8, ptr {chosen}, i64 8')
+                base = emit(f'load i64, ptr {baseptr}')
+                buffer = emit(f'load ptr, ptr {chosen}')
+                delta = emit(f'sub i64 {address}, {base}')
+                host = emit(f'getelementptr i8, ptr {buffer}, i64 {delta}')
+                if insn.amount > 1:
+                    bits = address
+                    if atomic:
+                        # LLVM's atomic requires aligned host storage as well.
+                        hostbits = emit(f'ptrtoint ptr {host} to i64')
+                        bits = emit(f'or i64 {address}, {hostbits}')
+                    low = emit(f'and i64 {bits}, {insn.amount - 1}')
+                    aligned = emit(f'icmp eq i64 {low}, 0')
+                    lines += [f'  br i1 {aligned}, label %aligned{insn.pc}, label %misaligned{insn.pc}',
+                              f'misaligned{insn.pc}:', f'  store i32 8, ptr {status}, align 1']
+                    fault_address = emit(f'getelementptr i8, ptr {chosen}, i64 32')
+                    fault_offset = emit(f'getelementptr i8, ptr {chosen}, i64 40')
+                    lines += [f'  store i64 {address}, ptr {fault_address}', f'  store i64 {offset}, ptr {fault_offset}',
+                              '  ret void', f'aligned{insn.pc}:']
+                if atomic:
+                    old = emit(f'atomicrmw xchg ptr {host}, i64 {read(insn.reg)} seq_cst, align 8')
+                    write(insn.reg, old)
+                else:
+                    vector = emit(f'getelementptr i8, ptr %state, i64 {xmm_offset(insn.reg)}')
+                    src, dst = (host, vector) if insn.op == 'vector_load' else (vector, host)
+                    value = emit(f'load i128, ptr {src}, align 1')
+                    lines.append(f'  store i128 {value}, ptr {dst}, align 1')
+            elif insn.op == 'fence':
+                lines.append('  fence seq_cst')
+            elif insn.op == 'ud2':
+                lines += [f'  store i32 9, ptr {status}, align 1', '  ret void']
+                continue
             elif insn.op in ('push', 'call', 'indirect'):
                 if insn.op == 'indirect':
                     if insn.memory is None:
@@ -475,6 +585,24 @@ def lift(specification):
         lines += ['exhausted:', f'  store i32 6, ptr {status}, align 1', '  ret void',
                   'halt:', '  ret void', '}']
         module.append('\n'.join(lines))
+        if mapped:
+            module.append(f"""define void @entry_{name}(ptr %state, ptr %table, ptr %stack) {{
+entry:
+  %status = getelementptr i8, ptr %state, i64 {OFFSETS['status']}
+  %validated = call i32 @bb_regions_prepare(ptr %table, ptr %stack)
+  %valid = icmp ne i32 %validated, 0
+  br i1 %valid, label %body, label %invalid
+invalid:
+  store i32 2, ptr %status, align 1
+  ret void
+body:
+  store i32 0, ptr %status, align 1
+  %budget = alloca i32, align 4
+  store i32 {STEP_LIMIT}, ptr %budget, align 4
+  call void @ss_{name}(ptr %state, ptr %table, ptr %stack, i64 {ROOT_RETURN}, ptr %budget)
+  ret void
+}}""")
+            continue
         # Both descriptors are validated before any root instruction executes.
         entry = [f'define void @entry_{name}(ptr %state, ptr %data, ptr %stack) {{', 'entry:',
                  ' %dvalid = call i1 @ss_valid(ptr %data, i64 64)',

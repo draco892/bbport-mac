@@ -63,7 +63,7 @@ class StateStackLiftTests(unittest.TestCase):
         self.assertIn('icmp ule i64 %m', default)
         self.assertIn(', 64', default)
         self.assertIn(', 512', stack)
-        for value in (0, -1, 513, True, '512'):
+        for value in (0, -1, 1048577, True, '512'):
             with self.assertRaises(ValueError): lift_memory(bytes.fromhex('488b0424c3'), 'bad', max_bytes=value)
 
     def test_immediate_scalar_lowering_preserves_original_operation(self):

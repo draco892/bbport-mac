@@ -37,7 +37,7 @@ def decode(code):
             return result
         # Reuse the verified scalar decoder, with exactly one instruction.
         found = False
-        for size in range(2, 5):
+        for size in range(2, 6):
             candidate = code[offset:offset + size]
             if len(candidate) != size: continue
             try:
@@ -125,8 +125,8 @@ def effective_address(insn, registers):
 
 
 def lift(code, name, *, max_bytes=MEMORY_BYTES):
-    if type(max_bytes) is not int or not 1 <= max_bytes <= 512:
-        raise ValueError('bounded region limit must be 1..512 bytes')
+    if type(max_bytes) is not int or not 1 <= max_bytes <= 1048576:
+        raise ValueError('bounded region limit must be 1..1048576 bytes')
     if not name.isascii() or not name.isidentifier(): raise ValueError('invalid function name')
     instructions = decode(code)
     helpers = []

@@ -29,8 +29,10 @@ def decode(code):
             if not instructions or offset != len(code) - 1:
                 raise ValueError('RET must end a nonempty fixture')
             return instructions
+        word = code[offset] == 0x66
+        if word: offset += 1
         rex = 0
-        if 0x40 <= code[offset] <= 0x4f:
+        if offset < len(code) and 0x40 <= code[offset] <= 0x4f:
             rex = code[offset]
             if rex & 2:
                 raise ValueError('REX.X outside the register-only contract')
@@ -53,10 +55,18 @@ def decode(code):
             raise ValueError('only GPR register operands are supported')
         reg = ((modrm >> 3) & 7) | ((rex & 4) << 1)
         rm = (modrm & 7) | ((rex & 1) << 3)
-        width = 64 if rex & 8 else 32
+        if word and rex & 8:
+            raise ValueError('conflicting operand widths')
+        width = 64 if rex & 8 else 16 if word else 32
+        byte_opcode = opcode in (0x00, 0x10, 0x28, 0x18, 0x20, 0x08, 0x30, 0x38, 0x84, 0x88, 0xfe)
+        if byte_opcode:
+            if word or rex & 8 or (not rex and (rm >= 4 or (opcode != 0xfe and reg >= 4))):
+                raise ValueError('unsupported byte register encoding')
+            width = 8
+            if opcode != 0xfe: opcode += 1
         if condition is not None:
             insn = Instruction('cmov', reg, rm, width, condition)
-        elif opcode == 0xff and not rex & 4 and (modrm >> 3) & 7 in (0, 1):
+        elif opcode in (0xfe, 0xff) and not rex & 4 and (modrm >> 3) & 7 in (0, 1):
             insn = Instruction('inc' if (modrm >> 3) & 7 == 0 else 'dec', rm, rm, width)
         elif opcode in BINARY:
             insn = Instruction(BINARY[opcode], rm, reg, width)
@@ -88,7 +98,7 @@ def lift_instructions(instructions, name):
     if not instructions:
         raise ValueError('empty scalar IR')
     for insn in instructions:
-        if (insn.op not in {*BINARY.values(), 'cmov', 'inc', 'dec'} or insn.width not in (32, 64)
+        if (insn.op not in {*BINARY.values(), 'cmov', 'inc', 'dec'} or insn.width not in (8, 16, 32, 64)
                 or not 0 <= insn.dst < 16 or not 0 <= insn.src < 16 or not 0 <= insn.condition < 16
                 or (insn.immediate is not None and
                     (type(insn.immediate) is not int or insn.op not in ('add', 'sub')))):
@@ -130,8 +140,8 @@ def lift_instructions(instructions, name):
         w, op = insn.width, insn.op
         ty = f'i{w}'
         a, b = registers[insn.dst], registers[insn.src]
-        if w == 32:
-            a, b = emit(f'trunc i64 {a} to i32'), emit(f'trunc i64 {b} to i32')
+        if w != 64:
+            a, b = emit(f'trunc i64 {a} to {ty}'), emit(f'trunc i64 {b} to {ty}')
         if insn.immediate is not None:
             b = str(insn.immediate & ((1 << w) - 1))
         if op == 'mov':
@@ -170,7 +180,7 @@ def lift_instructions(instructions, name):
                     carry = flag(0)
             zero = emit(f'icmp eq {ty} {result}, 0')
             sign = emit(f'icmp slt {ty} {result}, 0')
-            low = emit(f'trunc {ty} {result} to i8')
+            low = result if w == 8 else emit(f'trunc {ty} {result} to i8')
             population = emit(f'call i8 @llvm.ctpop.i8(i8 {low})')
             odd = emit(f'and i8 {population}, 1')
             parity = emit(f'icmp eq i8 {odd}, 0')
@@ -181,7 +191,12 @@ def lift_instructions(instructions, name):
                 new_flags = emit(f'or i64 {new_flags}, {positioned}')
             flags = new_flags
         if op not in ('cmp', 'test'):
-            registers[insn.dst] = emit(f'zext i32 {result} to i64') if w == 32 else result
+            if w != 64:
+                result = emit(f'zext {ty} {result} to i64')
+                if w < 32:
+                    upper = emit(f'and i64 {registers[insn.dst]}, {-1 << w}')
+                    result = emit(f'or i64 {upper}, {result}')
+            registers[insn.dst] = result
     lines.extend(f'  store i64 {value}, ptr {pointer}, align 1' for value, pointer in zip(registers, pointers))
     lines += [f'  store i64 {flags}, ptr {flagptr}, align 1',
               f'  %status = getelementptr i8, ptr %state, i64 {STATUS_OFFSET}',

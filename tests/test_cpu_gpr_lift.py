@@ -36,7 +36,7 @@ class GprLiftTests(unittest.TestCase):
 
     def test_rejects_outside_the_contract(self):
         for code in ('', 'c3', '90c3', '4889c8', '48', '480f', '4889',
-                     '488908c3', '488b01c3', '6689c8c3', '88c8c3',
+                     '488908c3', '488b01c3', '664889c8c3', '88e0c3',
                      '4801c8c390', '4801c8c3c3', '484801c8c3', '4a01c8c3',
                      '4801c8eb00c3', '4801c8e800000000c3', '48ffd0c3',
                      '4cffc0c3', '480f94c0c3', 'f04801c8c3', 'c3c3'):

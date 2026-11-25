@@ -107,10 +107,12 @@ def declarations():
                 for op in ('sadd', 'uadd', 'ssub', 'usub') for w in (8, 16)))
 
 
-def lift(code, name):
+def lift(code, name, *, integer_only=False):
     if not name.isidentifier() or not name.isascii():
         raise ValueError('invalid function name')
     instructions = decode(code)
+    if integer_only and any(insn.op in FP_IDS for insn in instructions):
+        raise ValueError('integer SIMD helper cannot execute FP instructions')
     lines = [f'define void @{name}(ptr %state) {{', 'entry:',
              f'  %mxptr = getelementptr i8, ptr %state, i64 {MXCSR_OFFSET}',
              f'  %statusptr = getelementptr i8, ptr %state, i64 {STATUS_OFFSET}',
@@ -123,6 +125,11 @@ def lift(code, name):
              '  br i1 %valid, label %body, label %reject',
              'reject:', '  store i32 1, ptr %statusptr, align 1', '  ret void',
              'body:', '  %host = call i64 @bb_simd_host_save()']
+    if integer_only:
+        # Integer SSE2 does not inspect guest MXCSR. Still preserve host FPSR.QC.
+        lines = [f'define void @{name}(ptr %state) {{', 'entry:',
+                 f'  %statusptr = getelementptr i8, ptr %state, i64 {STATUS_OFFSET}',
+                 '  %host = call i64 @bb_simd_host_save()']
     for register in range(16):
         lines += [f'  %p{register} = getelementptr i8, ptr %state, i64 {xmm_offset(register)}',
                   f'  %x{register} = load i128, ptr %p{register}, align 1']

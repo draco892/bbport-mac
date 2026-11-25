@@ -90,6 +90,10 @@ byte comparison. This is correctness evidence for the stated subset only.
   remaining instruction and runtime ABI contracts to that common state.
 - [x] Bounded register-only SSE/SSE2 integer and FP validation: all rounding modes,
   NaN payloads, masked exception flags, subnormals and all DAZ/FTZ modes.
+- [x] Checked MOVDQU/MOVDQA and packed integer SIMD mixed with scalar code.
+- [x] Byte/word register arithmetic and partial writes across the low-byte register bank.
+- [x] Multi-region guest table with permissions, overlap checks and unmapped-address faults.
+- [x] Aligned 64-bit memory XCHG, MFENCE and checked UD2 propagation.
 - [ ] General SIMD/FP coverage and integration with full guest state, including
   remaining instructions, registers, conversions/comparisons and unmasked traps.
 - [ ] Atomics and an explicit strategy for x86 memory ordering on ARM64.
@@ -124,7 +128,10 @@ original x86 replays, including actual guest CALL/RET addresses. The subsequent
 [control-flow increment](../recompiler/README.md#common-state-indirect-calls-callbacks-and-branches)
 adds checked indirect calls, synchronous callbacks and bounded loops in the same
 state. It passes 7,104 snapshots per backend and 4,827 original guest-only x86
-replays. SIMD memory, the full runtime ABI and real game execution remain open.
+replays. The [mixed-state increment](../recompiler/README.md#mixed-simd-region-tables-and-checked-atomic-operations)
+adds integer SIMD memory, partial GPR writes, multiple mapped regions and a bounded
+atomic and fault contract. Full instruction coverage, ordinary-memory x86 ordering,
+exception delivery, the runtime ABI and real game execution remain open.
 
 ## Completed increment: bounded stacks and direct calls
 

@@ -4,10 +4,10 @@
 #include "cpu_state.h"
 #include "guest_memory.h"
 
-typedef void (*TranslatedCallback)(BbCpuState *, BbGuestMemory *, BbGuestMemory *,
+typedef void (*TranslatedCallback)(BbCpuState *, void *, BbGuestMemory *,
                                    uint64_t, uint32_t *);
 
-void bb_state_host_callback(BbCpuState *state, BbGuestMemory *data, BbGuestMemory *stack,
+void bb_state_host_callback(BbCpuState *state, void *data, BbGuestMemory *stack,
                             uint64_t continuation, uint32_t *budget,
                             TranslatedCallback callback) {
     callback(state, data, stack, continuation, budget);

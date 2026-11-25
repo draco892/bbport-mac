@@ -63,7 +63,7 @@ def model(code, record):
             new |= int(af) << 4 | int(result == 0) << 6 | int(bool(result & sign)) << 7 | int(of) << 11
             flags = (flags & ~ARITHMETIC_FLAGS) | new
         if op not in ('cmp', 'test'):
-            state[insn.dst] = result
+            state[insn.dst] = (state[insn.dst] & ~mask) | result if w < 32 else result
     state[RFLAGS_INDEX], state[STATUS_INDEX] = flags, 0
     return STATE.pack(*state)
 
