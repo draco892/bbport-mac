@@ -5,7 +5,8 @@ Every guest effective address is an i64 integer until bounds/permissions pass.
 """
 from dataclasses import dataclass
 from cpu_state import OFFSETS
-from gpr_lift import decode as decode_gpr, lift as lift_gpr, DECLARATIONS
+from x86_address import decode_address
+from gpr_lift import decode as decode_gpr, lift as lift_gpr, DECLARATIONS, MAX_ENCODING_BYTES
 
 MEMORY_BYTES = 64
 MASK64 = (1 << 64) - 1
@@ -23,9 +24,10 @@ class Instruction:
     index: int | None = None
     scale: int = 1
     displacement: int = 0
+    rip_relative: bool = False
 
 
-def decode(code):
+def decode(code, *, allow_rip=False):
     if not code or len(code) > 4096:
         raise ValueError('expected 1..4096 bytes')
     result, offset = [], 0
@@ -37,7 +39,7 @@ def decode(code):
             return result
         # Reuse the verified scalar decoder, with exactly one instruction.
         found = False
-        for size in range(2, 6):
+        for size in range(2, MAX_ENCODING_BYTES + 1):
             candidate = code[offset:offset + size]
             if len(candidate) != size: continue
             try:
@@ -81,54 +83,35 @@ def decode(code):
         if offset >= len(code): raise ValueError('missing ModR/M')
         modrm = code[offset]
         offset += 1
-        mode, rm = modrm >> 6, modrm & 7
-        if mode == 3: raise ValueError('unsupported register form')
+        if modrm >> 6 == 3: raise ValueError('unsupported register form')
         reg = ((modrm >> 3) & 7) | ((rex & 4) << 1)
         if width == destination_width == 8 and not rex and reg >= 4:
             raise ValueError('AH/CH/DH/BH are outside this contract')
-        base, index, scale, displacement = None, None, 1, 0
-        disp_size = 1 if mode == 1 else 4 if mode == 2 else 0
-        if rm == 4:
-            if offset >= len(code): raise ValueError('missing SIB')
-            sib = code[offset]
-            offset += 1
-            raw_index, raw_base = (sib >> 3) & 7, sib & 7
-            scale = 1 << (sib >> 6)
-            if raw_index != 4 or rex & 2:
-                index = raw_index | ((rex & 2) << 2)
-            if mode == 0 and raw_base == 5:
-                if rex & 1: raise ValueError('noncanonical REX.B on no-base SIB')
-                disp_size = 4
-            else:
-                base = raw_base | ((rex & 1) << 3)
-        elif mode == 0 and rm == 5:
-            raise ValueError('RIP-relative addressing requires a separate code-address contract')
-        else:
-            if rex & 2: raise ValueError('REX.X without SIB')
-            base = rm | ((rex & 1) << 3)
-        if offset + disp_size > len(code): raise ValueError('truncated displacement')
-        if disp_size:
-            displacement = int.from_bytes(code[offset:offset + disp_size], 'little', signed=True)
-            offset += disp_size
+        address, offset = decode_address(code, offset, modrm, rex, allow_rip=allow_rip)
         raw = code[start:offset]
         if len(raw) > 15: raise ValueError('instruction exceeds x86 size limit')
         result.append(Instruction(start, raw, op, reg, width, destination_width,
-                                  base, index, scale, displacement))
+                                  address.base, address.index, address.scale, address.displacement,
+                                  address.rip_relative))
     raise ValueError('missing final RET')
 
 
-def effective_address(insn, registers):
+def effective_address(insn, registers, *, rip=None):
     address = 0
+    if insn.rip_relative:
+        if rip is None:
+            raise ValueError('RIP-relative operand requires the guest entry address')
+        address = rip + insn.pc + len(insn.raw)
     if insn.base is not None: address += registers[insn.base]
     if insn.index is not None: address += registers[insn.index] * insn.scale
     return (address + insn.displacement) & MASK64
 
 
-def lift(code, name, *, max_bytes=MEMORY_BYTES):
+def lift(code, name, *, max_bytes=MEMORY_BYTES, allow_rip=False):
     if type(max_bytes) is not int or not 1 <= max_bytes <= 1048576:
         raise ValueError('bounded region limit must be 1..1048576 bytes')
     if not name.isascii() or not name.isidentifier(): raise ValueError('invalid function name')
-    instructions = decode(code)
+    instructions = decode(code, allow_rip=allow_rip)
     helpers = []
     lines = [f'define void @{name}(ptr %state, ptr %mapping) {{', 'entry:']
     serial = 0
@@ -169,6 +152,10 @@ def lift(code, name, *, max_bytes=MEMORY_BYTES):
             lines.append(f'  call void @{helper}(ptr %state)')
             continue
         address = str(insn.displacement)
+        if insn.rip_relative:
+            rip_ptr = emit(f'getelementptr i8, ptr %state, i64 {OFFSETS["rip"]}')
+            rip = emit(f'load i64, ptr {rip_ptr}, align 1')
+            address = emit(f'add i64 {rip}, {insn.pc + len(insn.raw) + insn.displacement}')
         if insn.base is not None:
             _, value = gpr(insn.base)
             address = emit(f'add i64 {value}, {insn.displacement}')

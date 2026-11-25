@@ -70,7 +70,7 @@ class StateStackLiftTests(unittest.TestCase):
         ir = lift_instructions([ScalarInstruction('sub', 4, 0, 64, immediate=-1)], 'adjust')
         self.assertIn('sub i65', ir)
         self.assertIn('18446744073709551615', ir)
-        with self.assertRaises(ValueError): lift_instructions([ScalarInstruction('mov', 4, 0, 64, immediate=1)], 'bad')
+        with self.assertRaises(ValueError): lift_instructions([ScalarInstruction('cmov', 4, 0, 64, immediate=1)], 'bad')
         with self.assertRaises(ValueError): lift_instructions([ScalarInstruction('add', 16, 0, 64)], 'bad')
 
     def test_literal_full_snapshots(self):

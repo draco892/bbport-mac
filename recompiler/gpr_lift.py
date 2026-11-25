@@ -10,6 +10,8 @@ ARITHMETIC_FLAGS = 0x8d5  # CF, PF, AF, ZF, SF, OF
 BINARY = {0x01: 'add', 0x11: 'adc', 0x29: 'sub', 0x19: 'sbb',
           0x21: 'and', 0x09: 'or', 0x31: 'xor', 0x39: 'cmp',
           0x85: 'test', 0x89: 'mov'}
+GROUP1 = ('add', 'or', 'adc', 'sbb', 'and', 'sub', 'xor', 'cmp')
+MAX_ENCODING_BYTES = 10
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,16 @@ class Instruction:
 
 def decode(code):
     instructions, offset = [], 0
+
+    def read_immediate(size, *, signed=False):
+        nonlocal offset
+        end = offset + size
+        if end > len(code):
+            raise ValueError('truncated immediate')
+        value = int.from_bytes(code[offset:end], 'little', signed=signed)
+        offset = end
+        return value
+
     while offset < len(code):
         if code[offset] == 0xc3:
             if not instructions or offset != len(code) - 1:
@@ -41,6 +53,14 @@ def decode(code):
             raise ValueError('truncated opcode')
         opcode = code[offset]
         offset += 1
+        if word and rex & 8:
+            raise ValueError('conflicting operand widths')
+        width = 64 if rex & 8 else 16 if word else 32
+        if 0xb8 <= opcode <= 0xbf:
+            reg = (opcode & 7) | ((rex & 1) << 3)
+            value = read_immediate(width // 8)
+            instructions.append(Instruction('mov', reg, reg, width, immediate=value))
+            continue
         condition = None
         if opcode == 0x0f:
             if offset >= len(code) or not 0x40 <= code[offset] <= 0x4f:
@@ -55,9 +75,15 @@ def decode(code):
             raise ValueError('only GPR register operands are supported')
         reg = ((modrm >> 3) & 7) | ((rex & 4) << 1)
         rm = (modrm & 7) | ((rex & 1) << 3)
-        if word and rex & 8:
-            raise ValueError('conflicting operand widths')
-        width = 64 if rex & 8 else 16 if word else 32
+        if opcode in (0x81, 0x83, 0xc7):
+            extension = (modrm >> 3) & 7
+            if rex & 4 or (opcode == 0xc7 and extension != 0):
+                raise ValueError('unsupported immediate opcode extension')
+            op = 'mov' if opcode == 0xc7 else GROUP1[extension]
+            size = 1 if opcode == 0x83 else min(width // 8, 4)
+            value = read_immediate(size, signed=opcode == 0x83 or width == 64)
+            instructions.append(Instruction(op, rm, rm, width, immediate=value))
+            continue
         byte_opcode = opcode in (0x00, 0x10, 0x28, 0x18, 0x20, 0x08, 0x30, 0x38, 0x84, 0x88, 0xfe)
         if byte_opcode:
             if word or rex & 8 or (not rex and (rm >= 4 or (opcode != 0xfe and reg >= 4))):
@@ -92,7 +118,7 @@ def lift(code, name):
 
 
 def lift_instructions(instructions, name):
-    """Lower validated scalar IR; stack mode supplies ADD/SUB immediate operands."""
+    """Lower validated scalar IR with register and immediate operands."""
     if not name.isascii() or not name.isidentifier():
         raise ValueError('invalid function name')
     if not instructions:
@@ -101,7 +127,7 @@ def lift_instructions(instructions, name):
         if (insn.op not in {*BINARY.values(), 'cmov', 'inc', 'dec'} or insn.width not in (8, 16, 32, 64)
                 or not 0 <= insn.dst < 16 or not 0 <= insn.src < 16 or not 0 <= insn.condition < 16
                 or (insn.immediate is not None and
-                    (type(insn.immediate) is not int or insn.op not in ('add', 'sub')))):
+                    (type(insn.immediate) is not int or insn.op not in (*GROUP1, 'mov')))):
             raise ValueError('unsupported scalar IR contract')
     lines = [f'define void @{name}(ptr %state) {{', 'entry:']
     serial = 0

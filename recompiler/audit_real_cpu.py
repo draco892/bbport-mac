@@ -120,7 +120,7 @@ def function_ranges(data, headers):
 
 def supported_instruction(raw):
     try:
-        instructions = decode(raw if raw == b'\xc3' else raw + b'\xc3')
+        instructions = decode(raw if raw == b'\xc3' else raw + b'\xc3', real=True)
         return len(instructions) == (1 if raw == b'\xc3' else 2)
     except ValueError:
         return False
@@ -128,7 +128,7 @@ def supported_instruction(raw):
 
 def function_contract(raw):
     try:
-        instructions = decode(raw)
+        instructions = decode(raw, real=True)
     except ValueError:
         return 'decoder_rejected'
     boundaries = {i.pc for i in instructions}

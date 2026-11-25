@@ -383,7 +383,7 @@ def final_flags(name, decoded, calls, mask=ARITHMETIC_FLAGS):
     return mask
 
 
-def whole_native_bridge(functions, decoded, calls, *, flag_mask=None):
+def whole_native_bridge(functions, decoded, calls, *, flag_mask=None, root_return=ROOT_RETURN):
     names = ('rax', 'rcx', 'rdx', 'rbx', 'rsp', 'rbp', 'rsi', 'rdi', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15')
     saved = ('rbx', 'rbp', 'r12', 'r13', 'r14', 'r15')
     if flag_mask is None:
@@ -403,7 +403,7 @@ def whole_native_bridge(functions, decoded, calls, *, flag_mask=None):
     lines += ['movq %xmm12, %rdx', 'movq %rdx, 0(%rax)', 'movq %xmm13, %rdx', 'movq %rdx, 32(%rax)',
               'pushfq', 'popq %rdx', 'movq %xmm10, %rcx', 'andq %rcx, %rdx', 'movq 392(%rax), %rcx',
               f'andq ${-1 ^ ARITHMETIC_FLAGS}, %rcx', 'orq %rdx, %rcx', 'movq %rcx, 392(%rax)',
-              f'movabsq ${ROOT_RETURN}, %rdx', 'movq %rdx, 384(%rax)', 'movl $0, 404(%rax)']
+              f'movabsq ${root_return}, %rdx', 'movq %rdx, 384(%rax)', 'movl $0, 404(%rax)']
     lines += [f'popq %{r}' for r in reversed(saved)] + ['ret']
     return '\n'.join(lines) + '\n'
 

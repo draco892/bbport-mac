@@ -39,6 +39,8 @@ def model(code, record):
         w, op = insn.width, insn.op
         mask, sign = (1 << w) - 1, 1 << (w - 1)
         a, b = state[insn.dst] & mask, state[insn.src] & mask
+        if insn.immediate is not None:
+            b = insn.immediate & mask
         signed = lambda value: value - (1 << w) if value & sign else value
         if op == 'mov': result = b
         elif op == 'cmov': result = b if condition(insn.condition, flags) else a

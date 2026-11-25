@@ -94,6 +94,10 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [x] Byte/word register arithmetic and partial writes across the low-byte register bank.
 - [x] Multi-region guest table with permissions, overlap checks and unmapped-address faults.
 - [x] Aligned 64-bit memory XCHG, MFENCE and checked UD2 propagation.
+- [x] Isolated AOT execution of one real non-leaf `libSceFios2.prx` function
+  through the project's `scePthreadCondInit` implementation.
+- [x] RIP-relative scalar memory and indirect CALL through a registered target
+  set, 32/64-bit LEA, and selected register-immediate MOV and ALU encodings.
 - [ ] General SIMD/FP coverage and integration with full guest state, including
   remaining instructions, registers, conversions/comparisons and unmasked traps.
 - [ ] Atomics and an explicit strategy for x86 memory ordering on ARM64.
@@ -101,6 +105,34 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [ ] Representative game/module functions and their instruction/control-flow coverage.
 - [ ] Comparison of execution strategies and an explicit CPU-backend decision,
   including a Rosetta-independent compatibility path for uncovered valid targets.
+
+### Real module differential test
+
+On Apple Silicon with Rosetta, Clang and a native Python environment containing
+Capstone and Unicorn, run from the repository root:
+
+```sh
+out/cpu-real-tools/bin/python recompiler/run_real_nonleaf.py --game-dir asset/CUSA03173
+```
+
+The runner verifies the hash of the local module, selects its 30-byte unwind
+range at `0x2e0d0`, and resolves the `CALL` at `0x2e0e1` through the PLT,
+GOT and the matching libkernel `JUMP_SLOT` relocation. Both executables call
+the project's real `scePthreadCondInit` implementation. The harness retains
+the host handle long enough to destroy it and records a deterministic guest
+token for comparison.
+
+The four successful inputs compare the return value, defined flags, preserved
+registers, guest stack entries and two guest memory writes. A separate
+synthetic case checks a backward RIP-relative MOV, a RIP-relative indirect
+CALL, indexed LEA, and sign-extended and full-width immediates. ARM64 also
+checks a disallowed indirect target, two memory permission failures and the
+real wrapper's UD2 path after an injected service error.
+
+The runner produces `out/cpu-real-nonleaf/verification.json` and a verified
+ARM64 Mach-O object in the same directory. It uses an isolated import adapter
+and bounded guest regions. General loading and dispatch, guest threads,
+remaining instruction forms and gameplay validation are open.
 
 The [register-only SIMD/FP increment](CPU_BACKEND_SIMD.md) now passes 53,040,000
 snapshots per AOT backend with zero differences, plus known-answer and rejection

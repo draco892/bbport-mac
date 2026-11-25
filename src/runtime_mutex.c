@@ -131,7 +131,7 @@ static ABI int32_t mutex_timedlock(GuestMutex **mutex, uint32_t usec) {
 }
 /* Condition variables: opaque handles over host pthread_cond (CLOCK_REALTIME,
  * like FreeBSD's default), sharing the host mutex behind GuestMutex. */
-typedef struct { pthread_cond_t native; } GuestCond;
+typedef struct GuestCond { pthread_cond_t native; } GuestCond;
 static size_t conds, waits, wakeups;
 static ABI int32_t cond_init(GuestCond **out, void **attr, const char *name) {
     (void)attr; (void)name;

@@ -2,9 +2,10 @@
 from dataclasses import dataclass
 from cpu_state import OFFSETS, xmm_offset
 from gpr_lift import (decode as decode_gpr, lift as lift_gpr, lift_instructions,
-                      Instruction as ScalarInstruction, DECLARATIONS)
+                      Instruction as ScalarInstruction, DECLARATIONS, MAX_ENCODING_BYTES)
 from state_memory_lift import decode as decode_memory, lift as lift_memory
 from stack_lift import assemble
+from x86_address import decode_address
 from simd_lift import (decode as decode_simd, lift as lift_simd,
                        declarations as simd_declarations, FP_IDS)
 
@@ -27,15 +28,17 @@ class Instruction:
     memory: object = None
 
 
-def decode(code):
+def decode(code, *, real=False):
     if not code or len(code) > 4096: raise ValueError('expected 1..4096 code bytes')
     instructions, pc = [], 0
     while pc < len(code):
         start = pc
         if code[pc] == 0xc3:
-            if pc != len(code) - 1: raise ValueError('unreachable code after RET')
+            if not real and pc != len(code) - 1: raise ValueError('unreachable code after RET')
             instructions.append(Instruction(pc, b'\xc3', 'ret'))
-            return instructions
+            if pc == len(code) - 1: return instructions
+            pc += 1
+            continue
         if code[pc] == 0xe8:
             if pc + 5 > len(code): raise ValueError('truncated CALL rel32')
             raw = code[pc:pc + 5]
@@ -72,7 +75,7 @@ def decode(code):
             for end in range(ff + 2, min(len(code), ff + 7) + 1):
                 fake = bytes((0x48 | (rex & 3), 0x8b, modrm & 0xc7)) + code[ff + 2:end] + b'\xc3'
                 try:
-                    operand, = decode_memory(fake)
+                    operand, = decode_memory(fake, allow_rip=real)
                 except ValueError:
                     continue
                 instructions.append(Instruction(pc, code[pc:end], 'indirect', memory=operand))
@@ -111,6 +114,17 @@ def decode(code):
             instructions.append(Instruction(pc, code[pc:end], op))
             pc = end
             continue
+        if real:
+            rex = code[pc] if 0x40 <= code[pc] <= 0x4f else 0
+            opcode = pc + bool(rex)
+            if opcode + 1 < len(code) and code[opcode] == 0x8d:
+                modrm = code[opcode + 1]
+                addr, end = decode_address(code, opcode + 2, modrm, rex, allow_rip=True)
+                reg = ((modrm >> 3) & 7) | ((rex & 4) << 1)
+                instructions.append(Instruction(pc, code[pc:end], 'lea', reg=reg,
+                                                amount=64 if rex & 8 else 32, memory=addr))
+                pc = end
+                continue
         specialized = decode_extended_memory(code, pc)
         if specialized:
             instructions.append(specialized)
@@ -129,7 +143,7 @@ def decode(code):
                 break
         if pc != start: continue
         found = False
-        for size in range(2, 6):
+        for size in range(2, MAX_ENCODING_BYTES + 1):
             raw = code[pc:pc + size]
             if len(raw) != size: continue
             try:
@@ -146,7 +160,7 @@ def decode(code):
             raw = code[pc:pc + size]
             if len(raw) != size: continue
             try:
-                memory = decode_memory(raw + b'\xc3')
+                memory = decode_memory(raw + b'\xc3', allow_rip=real)
             except ValueError:
                 continue
             if len(memory) == 1 and memory[0].op != 'gpr':
@@ -155,6 +169,8 @@ def decode(code):
                 found = True
                 break
         if not found: raise ValueError(f'unsupported stack instruction at {start:#x}')
+    if real and instructions and instructions[-1].op == 'ud2':
+        return instructions
     raise ValueError('missing final RET')
 
 
@@ -191,18 +207,18 @@ def decode_extended_memory(code, pc):
     raise ValueError('unsupported vector/atomic memory operand')
 
 
-def analyze(specification):
+def analyze(specification, *, real=False, image_limit=0x10000):
     functions = assemble(specification)
     if not 1 <= len(functions) <= 128: raise ValueError('expected 1..128 known functions')
     decoded, addresses = {}, {}
     for name, function in functions.items():
         if not name.isidentifier() or not name.isascii(): raise ValueError('invalid function name')
         address = function['address']
-        if type(address) is not int or address < 0 or address + len(function['code']) > 0x10000:
+        if type(address) is not int or address < 0 or address + len(function['code']) > image_limit:
             raise ValueError('function outside bounded code image')
         if address in addresses: raise ValueError('duplicate function address')
         addresses[address] = name
-        decoded[name] = decode(function['code'])
+        decoded[name] = decode(function['code'], real=real)
     spans = sorted((f['address'], f['address'] + len(f['code'])) for f in functions.values())
     if any(b[0] < a[1] for a, b in zip(spans, spans[1:])): raise ValueError('overlapping functions')
     calls = {}
@@ -215,7 +231,10 @@ def analyze(specification):
         callbacks = specification[name].get('host_callbacks', {})
         if not isinstance(indirect, dict) or not isinstance(callbacks, dict):
             raise ValueError('call-site metadata must be an offset map')
-        used_indirect, used_callbacks = set(), set()
+        imports = specification[name].get('host_imports', {})
+        if not isinstance(imports, dict) or (imports and not real):
+            raise ValueError('host imports require the real module contract')
+        used_indirect, used_callbacks, used_imports = set(), set(), set()
         for insn in instructions:
             key = str(insn.pc)
             if insn.op == 'branch' and insn.target not in boundaries:
@@ -230,7 +249,11 @@ def analyze(specification):
                 edges[name].append(tuple(targets))
             if insn.op == 'call':
                 offset = functions[name]['address'] + insn.target
-                if offset == HOST_IMPORT and key in callbacks:
+                if key in imports:
+                    if type(imports[key]) is not int or imports[key] != offset or not 0 <= offset < image_limit:
+                        raise ValueError('invalid host import target at CALL')
+                    used_imports.add(key)
+                elif offset == HOST_IMPORT and key in callbacks:
                     target = callbacks[key]
                     if not isinstance(target, str) or target not in functions:
                         raise ValueError('callback must target a registered entry')
@@ -240,7 +263,7 @@ def analyze(specification):
                     if offset not in addresses: raise ValueError('CALL must target a registered function entry')
                     calls[name][insn.pc] = addresses[offset]
                     edges[name].append((addresses[offset],))
-        if used_indirect != set(indirect) or used_callbacks != set(callbacks):
+        if used_indirect != set(indirect) or used_callbacks != set(callbacks) or used_imports != set(imports):
             raise ValueError('unused indirect CALL or callback metadata')
     complete, visiting, costs, depths = set(), set(), {}, {}
 
@@ -381,9 +404,15 @@ define ptr @ss_select(ptr %data, ptr %stack, i64 %address, i1 %stack_fallback) {
 '''
 
 
-def lift(specification, *, mapped=False):
-    functions, decoded, calls, costs = analyze(specification)
+def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_return=ROOT_RETURN):
+    if real and not mapped:
+        raise ValueError('real module requires checked region table')
+    if real and not CODE_BASE + image_limit <= root_return <= MASK64:
+        raise ValueError('root return overlaps real module image')
+    functions, decoded, calls, costs = analyze(specification, real=real, image_limit=image_limit)
     module = [DECLARATIONS, support_ir()]
+    if any(function.get('host_imports') for function in specification.values()):
+        module.append('declare void @bb_state_host_import(ptr, ptr, i64)')
     if mapped:
         module += ['declare i32 @bb_regions_prepare(ptr, ptr)',
                    'declare ptr @bb_regions_select(ptr, ptr, i64, i32)']
@@ -437,13 +466,17 @@ def lift(specification, *, mapped=False):
                     result = emit(f'or i1 {bit(6)}, {result}')
             return emit(f'xor i1 {result}, true') if cc & 1 else result
 
-        def locate(memory):
-            address = str(memory.displacement)
+        def compute_address(memory, next_pc):
+            address = str(memory.displacement + (next_pc if memory.rip_relative else 0))
             if memory.base is not None:
                 address = emit(f'add i64 {read(memory.base)}, {memory.displacement}')
             if memory.index is not None:
                 scaled = emit(f'mul i64 {read(memory.index)}, {memory.scale}')
                 address = emit(f'add i64 {address}, {scaled}')
+            return address
+
+        def locate(memory, next_pc):
+            address = compute_address(memory, next_pc)
             if mapped:
                 chosen = emit(f'call ptr @bb_regions_select(ptr %data, ptr %stack, i64 {address}, i32 {int(memory.base in (4, 5))})')
             else:
@@ -472,10 +505,16 @@ def lift(specification, *, mapped=False):
                 module.append(lift_gpr(insn.raw + b'\xc3', helper) if insn.op == 'gpr'
                               else lift_instructions([scalar_for_adjust(insn)], helper))
                 lines.append(f'  call void @{helper}(ptr %state)')
+            elif insn.op == 'lea':
+                value = compute_address(insn.memory, next_pc)
+                if insn.amount == 32:
+                    low = emit(f'trunc i64 {value} to i32')
+                    value = emit(f'zext i32 {low} to i64')
+                write(insn.reg, value)
             elif insn.op == 'memory':
-                _, chosen = locate(insn.memory)
+                _, chosen = locate(insn.memory, next_pc)
                 helper = f'ss_{name}_memory_{insn.pc}'
-                module.append(lift_memory(insn.raw + b'\xc3', helper, max_bytes=1048576 if mapped else STACK_BYTES))
+                module.append(lift_memory(insn.raw + b'\xc3', helper, max_bytes=1048576 if mapped else STACK_BYTES, allow_rip=real))
                 lines.append(f'  call void @{helper}(ptr %state, ptr {chosen})')
                 value = emit(f'load i32, ptr {status}, align 1')
                 good = emit(f'icmp eq i32 {value}, 0')
@@ -488,7 +527,7 @@ def lift(specification, *, mapped=False):
                 module.append(lift_simd(insn.raw + b'\xc3', helper, integer_only=True))
                 lines.append(f'  call void @{helper}(ptr %state)')
             elif insn.op in ('vector_load', 'vector_store', 'exchange'):
-                address, chosen = locate(insn.memory)
+                address, chosen = locate(insn.memory, next_pc)
                 atomic = insn.op == 'exchange'
                 width = 8 if atomic else 16
                 right = 3 if atomic else 1 if insn.op == 'vector_load' else 2
@@ -531,7 +570,7 @@ def lift(specification, *, mapped=False):
                     if insn.memory is None:
                         target = read(insn.reg)
                     else:
-                        operand, chosen = locate(insn.memory)
+                        operand, chosen = locate(insn.memory, next_pc)
                         target = emit(f'call i64 @ss_read(ptr %state, ptr {chosen}, i64 {operand}, i64 {offset})')
                         check()
                     options = specification[name]['indirect_targets'][str(insn.pc)]
@@ -555,7 +594,21 @@ def lift(specification, *, mapped=False):
                 if insn.op != 'push':
                     arguments = f'ptr %state, ptr %data, ptr %stack, i64 {next_pc}, ptr %budget'
                     callback = specification[name].get('host_callbacks', {}).get(str(insn.pc))
-                    if callback:
+                    host_import = specification[name].get('host_imports', {}).get(str(insn.pc))
+                    if host_import is not None:
+                        lines.append(f'  call void @bb_state_host_import(ptr %state, ptr %data, i64 {host_import})')
+                        check()
+                        returned = emit(f'call i64 @ss_read(ptr %state, ptr %stack, i64 {address}, i64 {offset})')
+                        check()
+                        matches = emit(f'icmp eq i64 {returned}, {next_pc}')
+                        lines += [f'  br i1 {matches}, label %import_return{insn.pc}, label %bad_import_return{insn.pc}',
+                                  f'bad_import_return{insn.pc}:', f'  store i32 4, ptr {status}, align 1']
+                        fault_address = emit('getelementptr i8, ptr %stack, i64 32')
+                        fault_offset = emit('getelementptr i8, ptr %stack, i64 40')
+                        lines += [f'  store i64 {returned}, ptr {fault_address}', f'  store i64 {offset}, ptr {fault_offset}',
+                                  '  ret void', f'import_return{insn.pc}:']
+                        write(4, sp)
+                    elif callback:
                         lines.append(f'  call void @bb_state_host_callback({arguments}, ptr @ss_{callback})')
                     else:
                         callee = destination if insn.op == 'indirect' else f'@ss_{calls[name][insn.pc]}'
@@ -567,12 +620,12 @@ def lift(specification, *, mapped=False):
                 check()
                 if insn.op == 'ret':
                     expected = emit(f'icmp eq i64 {value}, %expected')
-                    lines += [f'  br i1 {expected}, label %return_ok, label %return_bad', 'return_bad:',
+                    lines += [f'  br i1 {expected}, label %return_ok{insn.pc}, label %return_bad{insn.pc}', f'return_bad{insn.pc}:',
                               f'  store i32 4, ptr {status}, align 1']
                     bad_address = emit('getelementptr i8, ptr %stack, i64 32')
                     bad_pc = emit('getelementptr i8, ptr %stack, i64 40')
                     lines += [f'  store i64 {value}, ptr {bad_address}', f'  store i64 {offset}, ptr {bad_pc}',
-                              '  ret void', 'return_ok:']
+                              '  ret void', f'return_ok{insn.pc}:']
                     advanced = emit(f'add i64 {address}, 8')
                     write(4, advanced)
                     lines += [f'  store i64 {value}, ptr {rip}, align 1', '  ret void']
@@ -599,7 +652,7 @@ body:
   store i32 0, ptr %status, align 1
   %budget = alloca i32, align 4
   store i32 {STEP_LIMIT}, ptr %budget, align 4
-  call void @ss_{name}(ptr %state, ptr %table, ptr %stack, i64 {ROOT_RETURN}, ptr %budget)
+  call void @ss_{name}(ptr %state, ptr %table, ptr %stack, i64 {root_return}, ptr %budget)
   ret void
 }}""")
             continue
@@ -624,6 +677,6 @@ body:
                   ' br i1 %valid, label %body, label %invalid', 'invalid:', ' store i32 2, ptr %status',
                   ' ret void', 'body:', ' store i32 0, ptr %status',
                   ' %budget = alloca i32, align 4', f' store i32 {STEP_LIMIT}, ptr %budget, align 4',
-                  f' call void @ss_{name}(ptr %state, ptr %data, ptr %stack, i64 {ROOT_RETURN}, ptr %budget)', ' ret void', '}']
+                  f' call void @ss_{name}(ptr %state, ptr %data, ptr %stack, i64 {root_return}, ptr %budget)', ' ret void', '}']
         module.append('\n'.join(entry))
     return '\n\n'.join(module), functions, decoded, calls, costs

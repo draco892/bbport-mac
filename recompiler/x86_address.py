@@ -8,14 +8,16 @@ class Address:
     index: int | None
     scale: int
     displacement: int
+    rip_relative: bool = False
 
 
-def decode_address(code, offset, modrm, rex):
-    """Decode 64-bit non-RIP-relative addressing after ModR/M."""
+def decode_address(code, offset, modrm, rex, *, allow_rip=False):
+    """Decode 64-bit addressing after ModR/M."""
     mode, rm = modrm >> 6, modrm & 7
     if mode == 3:
         raise ValueError('expected memory addressing')
     base, index, scale = None, None, 1
+    rip_relative = False
     disp_size = (0, 1, 4)[mode]
     if rm == 4:
         if offset >= len(code):
@@ -33,7 +35,10 @@ def decode_address(code, offset, modrm, rex):
         else:
             base = raw_base | ((rex & 1) << 3)
     elif mode == 0 and rm == 5:
-        raise ValueError('RIP-relative addressing requires a separate code-address contract')
+        if not allow_rip or rex & 1:
+            raise ValueError('unsupported RIP-relative addressing')
+        rip_relative = True
+        disp_size = 4
     else:
         if rex & 2:
             raise ValueError('REX.X without SIB')
@@ -42,4 +47,4 @@ def decode_address(code, offset, modrm, rex):
     if end > len(code):
         raise ValueError('truncated displacement')
     displacement = int.from_bytes(code[offset:end], 'little', signed=True)
-    return Address(base, index, scale, displacement), end
+    return Address(base, index, scale, displacement, rip_relative), end
