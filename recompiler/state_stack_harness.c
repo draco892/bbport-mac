@@ -82,7 +82,7 @@ int main(void) {
 #endif
     Input input;
     size_t bytes;
-    unsigned long count = 0, inputs = 0, native_checks = 0, outcomes[5] = {0, 0, 0, 0, 0};
+    unsigned long count = 0, inputs = 0, native_checks = 0, outcomes[7] = {0};
     const unsigned saved[] = {3, 5, 12, 13, 14, 15};
     while ((bytes = fread(&input, 1, sizeof input, stdin))) {
         if (bytes != sizeof input) return 3;
@@ -97,7 +97,14 @@ int main(void) {
         if (data_valid && stack_valid && disjoint &&
             ((input.data_size && input.data_base != SS_DATA_BASE) || (input.stack_size && input.stack_base != SS_STACK_BASE))) return 4;
 #endif
+#ifdef NATIVE_CONTROL
+        unsigned selected;
+        if (fread(&selected, sizeof selected, 1, stdin) != 1 || selected >= SS_ENTRIES) return 15;
+#endif
         for (unsigned f = 0; f < SS_ENTRIES; ++f) {
+#ifdef NATIVE_CONTROL
+            if (f != selected) continue;
+#endif
             memcpy(data, input.data, 96);
             memcpy(stack, input.stack, 544);
             prepare_stack(stack, &input);
@@ -113,7 +120,12 @@ int main(void) {
             seeded.status = UINT64_C(0x15) | ((uint64_t)((inputs + f) & 1) << 27);
 #endif
             write_host(seeded);
+#ifdef NATIVE_CONTROL
+            ss_native_entries[f](&guarded.cpu);
+            dm.fault_address = dm.fault_offset = sm.fault_address = sm.fault_offset = 0;
+#else
             ss_entries[f](&guarded.cpu, &dm, &sm);
+#endif
             HostEnvironment after = read_host();
             assert(after.control == seeded.control && after.status == seeded.status);
             assert(guarded.head[0] == UINT64_C(0x0123456789abcdef) && guarded.head[1] == UINT64_C(0xfeedfacefeedface));
@@ -126,7 +138,7 @@ int main(void) {
             assert(dm.bytes == (input.data_null ? NULL : data + 16) && sm.bytes == (input.stack_null ? NULL : stack + 16));
             assert(dm.guest_base == input.data_base && dm.byte_size == input.data_size && dm.permissions == input.data_rights);
             assert(sm.guest_base == input.stack_base && sm.byte_size == input.stack_size && sm.permissions == input.stack_rights);
-            assert(guarded.cpu.status <= 4);
+            assert(guarded.cpu.status <= 6);
             ++outcomes[guarded.cpu.status];
             if (!guarded.cpu.status) {
                 assert(guarded.cpu.rip == SS_ROOT_RETURN);
@@ -135,7 +147,7 @@ int main(void) {
                     for (unsigned i = 0; i < sizeof saved / sizeof saved[0]; ++i)
                         assert(guarded.cpu.gpr[saved[i]] == input.state.gpr[saved[i]]);
                 }
-#ifdef ORIGINAL
+#if defined(ORIGINAL) && !defined(NATIVE_CONTROL)
                 /* Replay every successful checked execution using original
                  * whole functions and real x86 CALL/RET at the guest addresses. */
                 BbCpuState expected = guarded.cpu, native = input.state;
@@ -167,7 +179,7 @@ int main(void) {
 #ifdef ORIGINAL
     munmap(mapped_data, page); munmap(mapped_stack, page); munmap(image, image_size);
 #endif
-    fprintf(stderr, "PASS: %lu full snapshots from %lu inputs; success=%lu bounds=%lu descriptor=%lu denied=%lu return=%lu; whole-native=%lu; guards/host FP preserved\n",
-            count, inputs, outcomes[0], outcomes[1], outcomes[2], outcomes[3], outcomes[4], native_checks);
+    fprintf(stderr, "PASS: %lu full snapshots from %lu inputs; success=%lu bounds=%lu descriptor=%lu denied=%lu return=%lu target=%lu budget=%lu; whole-native=%lu; guards/host FP preserved\n",
+            count, inputs, outcomes[0], outcomes[1], outcomes[2], outcomes[3], outcomes[4], outcomes[5], outcomes[6], native_checks);
     return ferror(stdin) || ferror(stdout);
 }

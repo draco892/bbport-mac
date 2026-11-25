@@ -15,10 +15,10 @@ from pathlib import Path
 
 from cpu_state import STATE, OFFSETS, STATUS_INDEX, RFLAGS_INDEX, RIP_INDEX, c_layout_checks
 from state_stack_lift import (CODE_BASE, ROOT_RETURN, DATA_BYTES, STACK_BYTES, MASK64,
-                              analyze, lift, scalar_for_adjust)
+                              analyze, lift, scalar_for_adjust, STEP_LIMIT)
 from state_memory_lift import effective_address
 from gpr_lift import decode as decode_gpr, ARITHMETIC_FLAGS
-from run_gpr import make_state, model as gpr_model, oracle_assembly, sha
+from run_gpr import make_state, model as gpr_model, oracle_assembly, sha, condition
 
 ROOT = Path(__file__).resolve().parent
 DATA_BASE, STACK_BASE = 0x200000010, 0x400000010
@@ -58,7 +58,7 @@ def adjust_model(state, insn):
     state[STATUS_INDEX] = 0
 
 
-def model(program, entry, record):
+def model(program, entry, record, specification=None):
     functions, decoded, calls, _ = program
     state, metadata, regions = prepare(record, entry, functions)
     maps = [metadata[:4], metadata[4:]]
@@ -78,12 +78,28 @@ def model(program, entry, record):
         faults[which] = [address, pc]
         return None
 
+    budget = STEP_LIMIT
+    specification = specification or {}
+
     def execute(name, expected):
-        nonlocal state
-        for insn in decoded[name]:
+        nonlocal state, budget
+        sites = specification.get(name, {})
+        by_pc = {insn.pc: insn for insn in decoded[name]}
+        cursor = 0
+        while True:
+            insn = by_pc[cursor]
             offset = functions[name]['address'] + insn.pc
             pc, next_pc = CODE_BASE + offset, CODE_BASE + offset + len(insn.raw)
             state[RIP_INDEX] = pc
+            if budget == 0:
+                state[STATUS_INDEX] = 6
+                return
+            budget -= 1
+            cursor += len(insn.raw)
+            if insn.op == 'branch':
+                if insn.amount < 0 or condition(insn.amount, state[RFLAGS_INDEX]):
+                    cursor = insn.target
+                continue
             if insn.op == 'gpr':
                 state = list(STATE.unpack(gpr_model(insn.raw + b'\xc3', STATE.pack(*state))))
             elif insn.op == 'adjust':
@@ -106,16 +122,38 @@ def model(program, entry, record):
                     mask = (1 << memory.destination_width) - 1
                     if memory.destination_width < 32: value = (state[memory.reg] & ~mask) | value
                     state[memory.reg] = value & (MASK64 if memory.destination_width < 32 else mask)
-            elif insn.op in ('push', 'call'):
+            elif insn.op in ('push', 'call', 'indirect'):
+                callee = None
+                callback = sites.get('host_callbacks', {}).get(str(insn.pc))
+                if insn.op == 'indirect':
+                    if insn.memory is None:
+                        target = state[insn.reg]
+                    else:
+                        memory = insn.memory
+                        operand = effective_address(memory, state[:16])
+                        which = next((i for i, (base, size, _, _) in enumerate(maps) if base <= operand < base + size),
+                                     int(memory.base in (4, 5)))
+                        pos = access(which, operand, 8, 1, offset)
+                        if pos is None: return
+                        target = int.from_bytes(regions[which][pos:pos + 8], 'little')
+                    callee = next((candidate for candidate in sites['indirect_targets'][str(insn.pc)]
+                                   if CODE_BASE + functions[candidate]['address'] == target), None)
+                    if callee is None:
+                        state[STATUS_INDEX] = 5
+                        faults[1] = [target, offset]
+                        return
+                elif insn.op == 'call':
+                    callee = callback or calls[name][insn.pc]
                 address = (state[4] - 8) & MASK64
                 value = state[insn.reg] if insn.op == 'push' else next_pc
                 pos = access(1, address, 8, 2, offset)
                 if pos is None: return
                 regions[1][pos:pos + 8] = value.to_bytes(8, 'little')
                 state[4] = address
-                if insn.op == 'call':
-                    execute(calls[name][insn.pc], next_pc)
+                if callee is not None:
+                    execute(callee, next_pc)
                     if state[STATUS_INDEX]: return
+                    if callback: state[0] = (state[0] + 17) & MASK64
             else:
                 address = state[5 if insn.op == 'leave' else 4]
                 pos = access(1, address, 8, 1, offset)
@@ -345,14 +383,16 @@ def final_flags(name, decoded, calls, mask=ARITHMETIC_FLAGS):
     return mask
 
 
-def whole_native_bridge(functions, decoded, calls):
+def whole_native_bridge(functions, decoded, calls, *, flag_mask=None):
     names = ('rax', 'rcx', 'rdx', 'rbx', 'rsp', 'rbp', 'rsi', 'rdi', 'r8', 'r9', 'r10', 'r11', 'r12', 'r13', 'r14', 'r15')
     saved = ('rbx', 'rbp', 'r12', 'r13', 'r14', 'r15')
+    if flag_mask is None:
+        flag_mask = lambda name: final_flags(name, decoded, calls)
     lines = ['.text']
     for name, function in functions.items():
         lines += [f'.globl _native_{name}', f'_native_{name}:'] + [f'pushq %{r}' for r in saved]
         lines += ['movq %rdi, %xmm15', 'movq %rsp, %xmm14',
-                  f'movq ${final_flags(name, decoded, calls)}, %rax', 'movq %rax, %xmm10',
+                  f'movq ${flag_mask(name)}, %rax', 'movq %rax, %xmm10',
                   'movq 392(%rdi), %rax', 'andq $0x8d5, %rax', 'orq $0x202, %rax', 'pushq %rax', 'popfq']
         lines += [f'movq {i * 8}(%rdi), %{r}' for i, r in enumerate(names) if r != 'rdi']
         lines += ['movq 56(%rdi), %rdi', f'jmp *Ltarget_{name}(%rip)',
@@ -374,7 +414,7 @@ def entry_header(specification, functions):
              f'#define SS_DATA_BASE UINT64_C({DATA_BASE})', f'#define SS_STACK_BASE UINT64_C({STACK_BASE})',
              f'#define SS_CODE_BASE UINT64_C({CODE_BASE})', f'#define SS_ROOT_RETURN UINT64_C({ROOT_RETURN})']
     lines.extend(f'extern void entry_{name}(BbCpuState *, BbGuestMemory *, BbGuestMemory *);' for name in names)
-    lines += ['static void (*ss_entries[])(BbCpuState *, BbGuestMemory *, BbGuestMemory *) = {' + ','.join('entry_' + n for n in names) + '};',
+    lines += ['#ifndef NATIVE_CONTROL', 'static void (*ss_entries[])(BbCpuState *, BbGuestMemory *, BbGuestMemory *) = {' + ','.join('entry_' + n for n in names) + '};', '#endif',
               'static const uint64_t ss_offsets[] = {' + ','.join(str(functions[n]['address']) for n in names) + '};',
               'static const unsigned ss_abi[] = {' + ','.join(str(int(specification[n].get('abi', True))) for n in names) + '};', '#ifdef ORIGINAL']
     lines.extend(f'extern void native_{name}(BbCpuState *);' for name in names)

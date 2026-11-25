@@ -73,9 +73,12 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [x] Bounded synthetic stacks and direct calls/returns across known functions.
 - [x] Common-state bounded guest stack, RBP frames, direct CALL/RET, integer stack
   arguments and guest return addresses, compared with whole original x86 functions.
-- [ ] General stack/ABI coverage, recursive execution and non-linear CFGs with calls.
+- [x] Bounded intra-function jumps, all Jcc predicates and loops combined with calls.
+- [ ] General stack/ABI coverage, recursive execution and cross-function control flow.
 - [x] Synthetic guest code-address registry and bounded indirect calls.
 - [x] Synthetic synchronous scalar host/guest callbacks with bounded reentry.
+- [x] Common-state indirect CALL through registers or checked memory, plus
+  synchronous host-to-guest callbacks through a registered host adapter.
 - [ ] General target discovery/resolution, indirect jumps and general callback ABI/lifecycle.
 - [x] Shared GPR/XMM/RIP/RFLAGS/MXCSR state layout, consumed by the SIMD experiment;
   XMM0–XMM15 execute under the existing bounded instruction contract.
@@ -84,7 +87,7 @@ byte comparison. This is correctness evidence for the stated subset only.
 - [x] Common-state guest memory accesses: checked single-region mapping, permissions,
   8/16/32/64-bit loads/stores, extensions, SIB addressing and precise checked failures.
 - [ ] Full observable guest register/flag execution semantics and migration of the
-  remaining forward-control-flow/indirect-call/callback contracts to that common state.
+  remaining instruction and runtime ABI contracts to that common state.
 - [x] Bounded register-only SSE/SSE2 integer and FP validation: all rounding modes,
   NaN payloads, masked exception flags, subnormals and all DAZ/FTZ modes.
 - [ ] General SIMD/FP coverage and integration with full guest state, including
@@ -117,8 +120,11 @@ exercise success, bounds rejection, invalid descriptors and permission denial.
 The [common-state stack increment](CPU_BACKEND_STATE_STACK.md) now adds a separate
 512-byte stack, active guest RIP, direct calls/returns and stack arguments. It
 passes 135,030 complete snapshots per AOT backend and 57,709 successful whole
-original x86 replays, including actual guest CALL/RET addresses. Indirect-call
-and callback migration, followed by combined control flow, are the next gates.
+original x86 replays, including actual guest CALL/RET addresses. The subsequent
+[control-flow increment](../recompiler/README.md#common-state-indirect-calls-callbacks-and-branches)
+adds checked indirect calls, synchronous callbacks and bounded loops in the same
+state. It passes 7,104 snapshots per backend and 4,827 original guest-only x86
+replays. SIMD memory, the full runtime ABI and real game execution remain open.
 
 ## Completed increment: bounded stacks and direct calls
 

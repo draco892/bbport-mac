@@ -36,7 +36,7 @@ class StateStackLiftTests(unittest.TestCase):
 
     def test_rejects_code_outside_stack_contract(self):
         for code in ('', '41', 'c3c3', 'c390', 'c20000', '6650c3', '4850c3', '6a01c3',
-                     '48c9c3', 'ffd0c3', 'ff3424c3', '8f0424c3', 'eb00c3', '4883ec',
+                     '48c9c3', 'ffd8c3', 'ff3424c3', '8f0424c3', 'eb', '4883ec',
                      '4881ec000000', 'e8000000', '0f100424c3', '488b0500000000c3'):
             with self.subTest(code=code), self.assertRaises(ValueError): decode(bytes.fromhex(code))
 

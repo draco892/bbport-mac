@@ -350,3 +350,42 @@ compile-time region limit while the standalone memory path keeps its 64-byte
 default. Both GPR and memory regression corpora pass after these shared changes.
 Indirect calls/callbacks, recursive/nonlinear control flow and runtime/game
 integration remain open. See [the exact stack/return policy and native reference](../docs/CPU_BACKEND_STATE_STACK.md).
+
+## Common-state indirect calls, callbacks and branches
+
+```sh
+python3 -m unittest discover -s tests -p 'test_cpu*lift.py' -v
+python3 recompiler/run_state_stack.py --sanitize
+python3 recompiler/run_state_control.py --sanitize
+```
+
+The common stack translator accepts near indirect CALL through a 64-bit register
+or a checked memory operand. Each call site has an explicit set of allowed
+guest function entries. Resolution precedes the return-slot write. The selected
+native function comes from the translator's registry, and guest registers and
+stack bytes continue to hold guest addresses. An invalid target sets status 5,
+records the attempted address and instruction offset in the stack descriptor,
+and leaves the failed CALL's return slot untouched.
+
+A fixture can also bind the reserved host import to a single translated guest
+callback. The synchronous host adapter borrows the CPU state, mappings, return
+address and instruction budget for the duration of the call. The adapter
+receives the registered callback from the translator. The test adapter invokes
+it once and adjusts RAX by 17 on success. A callback fault propagates at the
+guest instruction that failed. General import discovery, asynchronous callbacks
+and application ABI integration remain open.
+
+Short and near JMP/Jcc target instruction boundaries in the current function.
+All sixteen Jcc conditions read guest RFLAGS. Forward and backward edges can
+execute scalar instructions, memory accesses and calls. One 4,096-instruction
+budget covers the root, callees and callbacks. Exhaustion sets status 6 and
+leaves RIP at the next unexecuted guest instruction. Recursive call graphs
+remain outside the contract.
+
+On Apple Silicon, the control runner compared 7,104 full CPU/data/stack snapshots
+per translated backend with the Python model, including native ARM64 with UBSan.
+It replayed 4,827 successful guest-only paths on original x86 under Rosetta.
+Host callback paths are compared with the model using a real synchronous C
+adapter on each translated backend. Artifacts and verification reports are
+written under `out/recompiler-state-control/`. The game runtime still uses its
+existing CPU backend.

@@ -4,9 +4,9 @@ Updated 2026-11-25. Work for [issue #9](https://github.com/bmy/bbport-mac/issues
 The common state definition is now consumed by the register-only SIMD experiment,
 the [32/64-bit GPR/flag experiment](CPU_BACKEND_GPR.md) and the
 [checked guest-memory path](CPU_BACKEND_STATE_MEMORY.md), and
-[stack/direct calls](CPU_BACKEND_STATE_STACK.md). The earlier forward-control-flow,
-indirect-call and callback paths still need migration. General CPU-state integration
-remains open.
+[stack/direct calls](CPU_BACKEND_STATE_STACK.md). The stack translator also
+supports bounded branches, indirect calls and synchronous callbacks. General
+CPU-state and runtime integration remains open.
 
 ## Layout
 
@@ -102,8 +102,8 @@ test command produces fresh uncompressed files.
 
 The checked memory path executes scalar GPR/flag operations and guest loads/stores
 in this state; stack mode now adds PUSH/POP, frames and direct CALL/RET with a
-separate 512-byte mapping. Forward-control-flow, indirect calls and callbacks
-still need migration. Remaining work includes GPR/flag-producing instruction
+separate 512-byte mapping. The common stack path also supports bounded loops,
+indirect calls and synchronous callbacks. Remaining work includes GPR/flag-producing instruction
 coverage beyond the bounded arithmetic subset, combined memory/call/SIMD execution,
 x87/AVX/segment state, exceptions, atomics and real game-function coverage.
 Actual game testing stays with the user.

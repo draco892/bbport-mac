@@ -54,8 +54,9 @@ RET to another value is a controlled status-4 rejection, even when the target
 could be valid x86 code. General returns, indirect branches and target discovery
 remain open. Registered functions must not overlap or collide with the root
 boundary. Recursive graphs, depth above 16 and more than 4,096 expanded
-instructions per root are rejected before code generation. Only straight-line
-function bodies are accepted; arbitrary branches and loops are not yet migrated.
+instructions per root are rejected before code generation. The original stack corpus uses straight-line bodies. The subsequent
+[control-flow increment](../recompiler/README.md#common-state-indirect-calls-callbacks-and-branches)
+adds bounded branches and loops to the same translator.
 
 No alignment fault is invented for an unaligned stack operand. The harness
 includes aligned ABI frames and unaligned instruction cases. For roots marked
@@ -162,8 +163,8 @@ The GPR and checked-memory regression suites were also rerun after introducing
 the shared immediate lowerer and configurable memory-helper limit. Their default
 contracts retain their previous comparison counts and results.
 
-The next integration gate is indirect calls/callbacks in this state, followed by
-combined control flow and SIMD memory. The existing legacy stack/indirect modes
+The control-flow increment now combines stack and memory with indirect calls,
+synchronous callbacks and loops. SIMD memory is the next integration gate. The existing legacy stack/indirect modes
 remain regression references. General ABI coverage, recursive execution,
 exceptions, atomics, real game functions and production backend integration
 remain open. Launching Bloodborne still uses the Rosetta CPU reference.
