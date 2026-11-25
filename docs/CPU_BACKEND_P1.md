@@ -98,6 +98,12 @@ byte comparison. This is correctness evidence for the stated subset only.
   through the project's `scePthreadCondInit` implementation.
 - [x] RIP-relative scalar memory and indirect CALL through a registered target
   set, 32/64-bit LEA, and selected register-immediate MOV and ALU encodings.
+- [x] Checked memory CMP/TEST and immediate MOV stores, register extensions,
+  multi-byte NOPs, and 32/64-bit immediate SHL/SHR/SAR/ROL/ROR.
+- [x] Checked AVX scalar and packed memory moves and the upper YMM state
+  they read or clear.
+- [x] Native ARM64 loading of the standard linked image, initial TLS and dispatch
+  to one translated module entry with a registered runtime import.
 - [ ] General SIMD/FP coverage and integration with full guest state, including
   remaining instructions, registers, conversions/comparisons and unmasked traps.
 - [ ] Atomics and an explicit strategy for x86 memory ordering on ARM64.
@@ -124,15 +130,42 @@ token for comparison.
 
 The four successful inputs compare the return value, defined flags, preserved
 registers, guest stack entries and two guest memory writes. A separate
-synthetic case checks a backward RIP-relative MOV, a RIP-relative indirect
-CALL, indexed LEA, and sign-extended and full-width immediates. ARM64 also
-checks a disallowed indirect target, two memory permission failures and the
+synthetic case checks backward RIP-relative MOV and indirect CALL, indexed LEA,
+immediate stores, memory comparisons, register extensions, shifts, rotates,
+and scalar and packed AVX moves. ARM64 also checks a disallowed indirect
+target, three memory permission failures, an AVX alignment fault, and the
 real wrapper's UD2 path after an injected service error.
 
 The runner produces `out/cpu-real-nonleaf/verification.json` and a verified
 ARM64 Mach-O object in the same directory. It uses an isolated import adapter
-and bounded guest regions. General loading and dispatch, guest threads,
-remaining instruction forms and gameplay validation are open.
+and bounded guest regions.
+
+### Native ARM64 linked-image test
+
+The native loader test runs the standard `prepare.py` and `link_modules.py`
+pipeline on the local game and feeds the resulting `BBPROBE5` to the same
+boot-image reader used by the x86 loader.
+
+```sh
+out/cpu-real-tools/bin/python recompiler/run_aot_loader.py --game-dir asset/CUSA03173
+```
+
+The script verifies and saves `out/cpu-aot-loader/bb-probe-aot`,
+`boot-linked.bin`, and `loader.log`. To rerun the load and dispatch:
+
+```sh
+out/cpu-aot-loader/bb-probe-aot out/cpu-aot-loader/boot-linked.bin
+```
+
+The test uses ARM64 guest address mappings and permissions, applies the linked
+image relocations, initializes the main and module TLS areas, and exercises
+an AOT guest TLS self-pointer load. It validates the translated
+`libSceFios2` entry against the loaded bytes and dispatches its GOT import
+to the native `scePthreadCondInit` bridge.
+
+Other imports remain guest tokens or guest module addresses. Dynamic TLS,
+generic dispatch, module initializers, and the eboot startup path still
+require translation or runtime coverage before gameplay.
 
 The [register-only SIMD/FP increment](CPU_BACKEND_SIMD.md) now passes 53,040,000
 snapshots per AOT backend with zero differences, plus known-answer and rejection

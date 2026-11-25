@@ -163,8 +163,9 @@ def select_leaves(data, ranges, disassembler, limit, pinned=()):
             tier = 'unicorn_only'
         if address not in pinned and len(picks[tier]) >= limit:
             continue
-        if any(i.mnemonic not in ('mov', 'movabs', 'lea', 'add', 'sub', 'xor', 'and',
-                                  'or', 'inc', 'dec', 'cmp', 'test', 'adc', 'sbb')
+        if any(i.mnemonic not in ('mov', 'movabs', 'movsx', 'movsxd', 'movzx', 'lea', 'add', 'sub', 'xor', 'and',
+                                  'or', 'inc', 'dec', 'cmp', 'test', 'adc', 'sbb',
+                                  'shl', 'shr', 'sar', 'rol', 'ror')
                or any(i.reg_name(r) in ('rsp', 'esp', 'sp', 'spl') for r in i.regs_access()[1])
                or any(o.type == X86_OP_MEM and (i.mnemonic != 'lea' or
                       o.mem.segment or o.mem.base in (X86_REG_RIP, X86_REG_EIP))

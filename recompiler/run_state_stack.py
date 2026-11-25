@@ -17,7 +17,7 @@ from cpu_state import STATE, OFFSETS, STATUS_INDEX, RFLAGS_INDEX, RIP_INDEX, c_l
 from state_stack_lift import (CODE_BASE, ROOT_RETURN, DATA_BYTES, STACK_BYTES, MASK64,
                               analyze, lift, scalar_for_adjust, STEP_LIMIT)
 from state_memory_lift import effective_address
-from gpr_lift import decode as decode_gpr, ARITHMETIC_FLAGS
+from gpr_lift import defined_flags, ARITHMETIC_FLAGS
 from run_gpr import make_state, model as gpr_model, oracle_assembly, sha, condition
 
 ROOT = Path(__file__).resolve().parent
@@ -376,9 +376,7 @@ def final_flags(name, decoded, calls, mask=ARITHMETIC_FLAGS):
     for insn in decoded[name]:
         if insn.op == 'adjust': mask = ARITHMETIC_FLAGS
         elif insn.op == 'gpr':
-            op = decode_gpr(insn.raw + b'\xc3')[0].op
-            if op in ('and', 'or', 'xor', 'test'): mask = ARITHMETIC_FLAGS & ~16
-            elif op not in ('mov', 'cmov'): mask = ARITHMETIC_FLAGS
+            mask = defined_flags(insn.raw + b'\xc3', mask)
         elif insn.op == 'call': mask = final_flags(calls[name][insn.pc], decoded, calls, mask)
     return mask
 

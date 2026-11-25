@@ -26,6 +26,7 @@ class Instruction:
     amount: int = 0
     target: int = 0
     memory: object = None
+    vector_bytes: int = 16
 
 
 def decode(code, *, real=False):
@@ -115,6 +116,29 @@ def decode(code, *, real=False):
             pc = end
             continue
         if real:
+            if code[pc] == 0x90:
+                instructions.append(Instruction(pc, b'\x90', 'nop'))
+                pc += 1
+                continue
+            nop = pc + (code[pc] == 0x66)
+            nop += code[nop:nop + 1] == b'\x2e'
+            if code[nop:nop + 2] == b'\x0f\x1f':
+                if nop + 2 >= len(code) or code[nop + 2] & 0x38:
+                    raise ValueError('invalid multi-byte NOP')
+                modrm = code[nop + 2]
+                end = nop + 3
+                if modrm >> 6 != 3:
+                    _, end = decode_address(code, end, modrm, 0, allow_rip=True)
+                instructions.append(Instruction(pc, code[pc:end], 'nop'))
+                pc = end
+                continue
+            if (pc + 9 <= len(code) and code[pc] in (0x64, 0x65) and code[pc + 1] in (0x48, 0x4c)
+                    and code[pc + 2] == 0x8b and code[pc + 3] & 0xc7 == 4
+                    and code[pc + 4:pc + 9] == b'\x25\x00\x00\x00\x00'):
+                reg = ((code[pc + 3] >> 3) & 7) | ((code[pc + 1] & 4) << 1)
+                instructions.append(Instruction(pc, code[pc:pc + 9], 'tls_self', reg=reg))
+                pc += 9
+                continue
             rex = code[pc] if 0x40 <= code[pc] <= 0x4f else 0
             opcode = pc + bool(rex)
             if opcode + 1 < len(code) and code[opcode] == 0x8d:
@@ -125,7 +149,8 @@ def decode(code, *, real=False):
                                                 amount=64 if rex & 8 else 32, memory=addr))
                 pc = end
                 continue
-        specialized = decode_extended_memory(code, pc)
+        specialized = decode_avx_move(code, pc) if real else None
+        specialized = specialized or decode_extended_memory(code, pc)
         if specialized:
             instructions.append(specialized)
             pc += len(specialized.raw)
@@ -156,11 +181,11 @@ def decode(code, *, real=False):
                 found = True
                 break
         if found: continue
-        for size in range(2, 12):
+        for size in range(2, 16 if real else 12):
             raw = code[pc:pc + size]
             if len(raw) != size: continue
             try:
-                memory = decode_memory(raw + b'\xc3', allow_rip=real)
+                memory = decode_memory(raw + b'\xc3', allow_rip=real, extended=real)
             except ValueError:
                 continue
             if len(memory) == 1 and memory[0].op != 'gpr':
@@ -172,6 +197,32 @@ def decode(code, *, real=False):
     if real and instructions and instructions[-1].op == 'ud2':
         return instructions
     raise ValueError('missing final RET')
+
+
+def decode_avx_move(code, pc):
+    """VEX scalar and packed memory moves in the 0F opcode map."""
+    vex = code[pc]
+    prefix = 2 if vex == 0xc5 else 3
+    opcode = pc + prefix
+    if vex not in (0xc4, 0xc5) or opcode + 1 >= len(code):
+        return None
+    extension = (~code[pc + 1] >> 5) & (4 if prefix == 2 else 7)
+    if prefix == 3 and code[pc + 1] & 31 != 1:
+        return None
+    control = code[opcode - 1]
+    pp = control & 3
+    form = code[opcode]
+    modrm = code[opcode + 1]
+    if (control & 0x78 != 0x78 or
+            form not in (0x10, 0x11, 0x28, 0x29) or modrm >> 6 == 3):
+        return None
+    if pp > 1 and (form not in (0x10, 0x11) or control & 4):
+        return None
+    address, end = decode_address(code, opcode + 2, modrm, extension, allow_rip=True)
+    width = {2: 4, 3: 8}.get(pp, 32 if control & 4 else 16)
+    return Instruction(pc, code[pc:end], 'avx_store' if form & 1 else 'avx_load',
+                       reg=((modrm >> 3) & 7) | ((extension & 4) << 1),
+                       amount=width if form in (0x28, 0x29) else 1, memory=address, vector_bytes=width)
 
 
 def decode_extended_memory(code, pc):
@@ -404,7 +455,8 @@ define ptr @ss_select(ptr %data, ptr %stack, i64 %address, i1 %stack_fallback) {
 '''
 
 
-def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_return=ROOT_RETURN):
+def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_return=ROOT_RETURN,
+         region_limit=1048576):
     if real and not mapped:
         raise ValueError('real module requires checked region table')
     if real and not CODE_BASE + image_limit <= root_return <= MASK64:
@@ -416,6 +468,10 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
     if mapped:
         module += ['declare i32 @bb_regions_prepare(ptr, ptr)',
                    'declare ptr @bb_regions_select(ptr, ptr, i64, i32)']
+    if any(insn.op == 'tls_self' for body in decoded.values() for insn in body):
+        module.append('declare i64 @bb_regions_thread_pointer(ptr)')
+    if any(insn.op in ('avx_load', 'avx_store') for body in decoded.values() for insn in body):
+        module.append('declare ptr @bb_regions_ymm_high(ptr, i32)')
     if any(insn.op == 'simd' for body in decoded.values() for insn in body):
         module.append(simd_declarations())
     if any(function.get('host_callbacks') for function in specification.values()):
@@ -511,10 +567,17 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                     low = emit(f'trunc i64 {value} to i32')
                     value = emit(f'zext i32 {low} to i64')
                 write(insn.reg, value)
+            elif insn.op == 'tls_self':
+                address = emit('call i64 @bb_regions_thread_pointer(ptr %data)')
+                chosen = emit(f'call ptr @bb_regions_select(ptr %data, ptr %stack, i64 {address}, i32 0)')
+                value = emit(f'call i64 @ss_read(ptr %state, ptr {chosen}, i64 {address}, i64 {offset})')
+                check()
+                write(insn.reg, value)
             elif insn.op == 'memory':
                 _, chosen = locate(insn.memory, next_pc)
                 helper = f'ss_{name}_memory_{insn.pc}'
-                module.append(lift_memory(insn.raw + b'\xc3', helper, max_bytes=1048576 if mapped else STACK_BYTES, allow_rip=real))
+                module.append(lift_memory(insn.raw + b'\xc3', helper, max_bytes=region_limit if mapped else STACK_BYTES,
+                                          allow_rip=real, extended=real))
                 lines.append(f'  call void @{helper}(ptr %state, ptr {chosen})')
                 value = emit(f'load i32, ptr {status}, align 1')
                 good = emit(f'icmp eq i32 {value}, 0')
@@ -526,11 +589,12 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                 helper = f'ss_{name}_simd_{insn.pc}'
                 module.append(lift_simd(insn.raw + b'\xc3', helper, integer_only=True))
                 lines.append(f'  call void @{helper}(ptr %state)')
-            elif insn.op in ('vector_load', 'vector_store', 'exchange'):
+            elif insn.op in ('vector_load', 'vector_store', 'avx_load', 'avx_store', 'exchange'):
                 address, chosen = locate(insn.memory, next_pc)
                 atomic = insn.op == 'exchange'
-                width = 8 if atomic else 16
-                right = 3 if atomic else 1 if insn.op == 'vector_load' else 2
+                load = insn.op in ('vector_load', 'avx_load')
+                width = 8 if atomic else insn.vector_bytes
+                right = 3 if atomic else 1 if load else 2
                 ok = emit(f'call i1 @ss_access(ptr %state, ptr {chosen}, i64 {address}, i64 {right}, i64 {offset}, i64 {width})')
                 lines += [f'  br i1 {ok}, label %mapped{insn.pc}, label %halt', f'mapped{insn.pc}:']
                 baseptr = emit(f'getelementptr i8, ptr {chosen}, i64 8')
@@ -557,9 +621,21 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                     write(insn.reg, old)
                 else:
                     vector = emit(f'getelementptr i8, ptr %state, i64 {xmm_offset(insn.reg)}')
-                    src, dst = (host, vector) if insn.op == 'vector_load' else (vector, host)
-                    value = emit(f'load i128, ptr {src}, align 1')
-                    lines.append(f'  store i128 {value}, ptr {dst}, align 1')
+                    src, dst = (host, vector) if load else (vector, host)
+                    bits = min(width * 8, 128)
+                    value = emit(f'load i{bits}, ptr {src}, align 1')
+                    if load and bits < 128:
+                        value = emit(f'zext i{bits} {value} to i128')
+                    lines.append(f'  store i{128 if load else bits} {value}, ptr {dst}, align 1')
+                    if width == 32 or insn.op == 'avx_load':
+                        upper = emit(f'call ptr @bb_regions_ymm_high(ptr %data, i32 {insn.reg})')
+                        if width == 32:
+                            memory_high = emit(f'getelementptr i8, ptr {host}, i64 16')
+                            src, dst = (memory_high, upper) if load else (upper, memory_high)
+                            value = emit(f'load i128, ptr {src}, align 1')
+                            lines.append(f'  store i128 {value}, ptr {dst}, align 1')
+                        else:
+                            lines.append(f'  store i128 0, ptr {upper}, align 1')
             elif insn.op == 'fence':
                 lines.append('  fence seq_cst')
             elif insn.op == 'ud2':

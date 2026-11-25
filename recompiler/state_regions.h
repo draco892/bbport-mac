@@ -12,9 +12,14 @@ typedef struct {
     BbGuestMemory *regions;
     uint64_t count;
     BbGuestMemory unmapped;
+    uint64_t region_limit; /* zero selects the fixture limit */
+    uint64_t thread_pointer;
+    uint64_t ymm_high[16][2]; /* VEX state beyond the legacy XMM layout */
 } BbGuestRegions;
 
 int bb_regions_prepare(BbGuestRegions *, BbGuestMemory *);
 BbGuestMemory *bb_regions_select(BbGuestRegions *, BbGuestMemory *, uint64_t, int);
+uint64_t bb_regions_thread_pointer(const BbGuestRegions *);
+uint64_t *bb_regions_ymm_high(BbGuestRegions *, unsigned reg);
 
 #endif

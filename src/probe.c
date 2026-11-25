@@ -7,6 +7,7 @@
 #include <inttypes.h>
 #include <cpuid.h>
 #include "runtime.h"
+#include "boot_image.h"
 #include "platform.h"
 #include "gpu/bbgpu.h"
 #if !defined(__x86_64__) || !defined(__GNUC__)
@@ -36,15 +37,13 @@
 #include <sys/syscall.h>
 #endif
 
-typedef struct { uint64_t address, size, flags; } Segment;
-typedef struct { uint64_t target, kind, value, addend; } Reloc;
+typedef BbBootSegment Segment;
+typedef BbBootReloc Reloc;
 static char (*names)[128];
 static uint64_t import_count;
 static unsigned char *image;
 static size_t page_size;
-typedef struct { uint64_t base, size, init, tls_address, tls_memsz, tls_filesz, tls_module; } LinkedModule;
-static LinkedModule modules[16];
-static uint64_t module_count;
+static BbBootImage boot;
 static int entered_game;
 static int gpu_enabled;
 int vulkan_smoke(void);
@@ -131,9 +130,9 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
     printf("Caller return offset: 0x%" PRIxPTR "; first argument: 0x%" PRIxPTR "\n",
            (uintptr_t)__builtin_return_address(0) - (uintptr_t)image, argument);
     uintptr_t caller=(uintptr_t)__builtin_return_address(0)-(uintptr_t)image;
-    for (uint64_t m=0;m<module_count;++m)
-        if (caller>=modules[m].base && caller-modules[m].base<modules[m].size)
-            printf("Caller in linked module %" PRIu64 " (%s): +0x%" PRIxPTR "\n",m,m==0 ? "libc.prx" : "system module",(uintptr_t)(caller-modules[m].base));
+    for (uint64_t m=0;m<boot.module_count;++m)
+        if (caller>=boot.modules[m].base && caller-boot.modules[m].base<boot.modules[m].size)
+            printf("Caller in linked module %" PRIu64 " (%s): +0x%" PRIxPTR "\n",m,m==0 ? "libc.prx" : "system module",(uintptr_t)(caller-boot.modules[m].base));
     runtime_report();
     puts(entered_game ? "Original guest entry instructions executed; game initialization is incomplete." :
                         "Native libc initialization is incomplete; game entry has not run.");
@@ -396,12 +395,6 @@ static int sfo_value(const char *path, const char *key, char *text, size_t text_
     }
     return 0;
 }
-static int mapped(Segment *segments, uint64_t count, uint64_t address, uint64_t bytes) {
-    for (uint64_t i = 0; i < count; ++i)
-        if (address >= segments[i].address && bytes <= segments[i].size &&
-            address - segments[i].address <= segments[i].size - bytes) return 1;
-    return 0;
-}
 /* BBPATCH2 (patches.py): the patches' image base, then byte writes at image offsets, applied
  * after relocation. A write may replace a whole base-relative pointer slot (60/90 FPS++ swap
  * function pointers): the patch holds the address at the patches' base, rebased here. */
@@ -413,7 +406,7 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
     unsigned char data[4096];
     for (uint64_t i=0;i<count;++i) {
         uint64_t offset=read64(f), length=read64(f);
-        if (!length || length>sizeof(data) || !mapped(segments,ns,offset,length) || fread(data,1,length,f)!=length)
+        if (!length || length>sizeof(data) || !bb_boot_mapped(segments,ns,offset,length) || fread(data,1,length,f)!=length)
             fail("bad patch entry");
         uint64_t slots[sizeof(data)/8]; size_t nslots=0;
         for (uint64_t r=0;r<nr;++r) {
@@ -421,7 +414,7 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
             uint64_t target=relocs[r].target, value;
             if (relocs[r].kind || target<offset || target+8>offset+length) fail("patch overlaps a relocation");
             memcpy(&value,data+(target-offset),8);
-            if (value<base || !mapped(segments,ns,value-base,1)) fail("patch writes a pointer outside the image");
+            if (value<base || !bb_boot_mapped(segments,ns,value-base,1)) fail("patch writes a pointer outside the image");
             slots[nslots++]=target;
         }
         /* Hooks the GPU library installed before (at its start: bbport_guest_hooks) leave their
@@ -548,107 +541,17 @@ static int probe_main(int argc, char **argv) {
     sigemptyset(&alarm_action.sa_mask); sigaction(SIGALRM, &alarm_action, NULL);
     alarm(timeout_seconds); /* 0 disables the watchdog */
 #endif
-    FILE *f = fopen(argv[1], "rb");
-    if (!f) fail("cannot open boot file; run prepare.py first");
-    char magic[8];
-    if (fread(magic, 1, 8, f) != 8 || (memcmp(magic, "BBPROBE1", 8) && memcmp(magic, "BBPROBE2", 8) && memcmp(magic,"BBPROBE3",8) && memcmp(magic,"BBPROBE4",8) && memcmp(magic,"BBPROBE5",8))) fail("bad boot file signature");
-    uint64_t size = read64(f), entry = read64(f), ns = read64(f), nr = read64(f);
-    import_count = read64(f);
-    uint64_t capabilities = memcmp(magic, "BBPROBE1", 8) ? read64(f) : 0;
-    if (capabilities & ~UINT64_C(1)) fail("unknown runtime capabilities");
-    runtime_start(strict_imports ? 0 : capabilities);
-    if (!size || size > 512*1024*1024 || entry >= size || !ns || ns > 64 || nr > 1000000 || import_count > 100000)
-        fail("boot file limits exceeded");
-    int multi=!memcmp(magic,"BBPROBE5",8);
-    int linked=!memcmp(magic,"BBPROBE3",8) || !memcmp(magic,"BBPROBE4",8) || multi;
-    int native_libc=linked && !strict_imports && (capabilities&1);
-    uint64_t main_tls[4]={0};
-    uint64_t nb=0,procparam=0;
-    uint64_t *bindings=calloc(import_count ? import_count : 1,sizeof(*bindings));
-    uint64_t *binding_kinds=calloc(import_count ? import_count : 1,sizeof(*binding_kinds));
-    if (!bindings || !binding_kinds) fail("allocation failed");
-    if (multi) {
-        /* BBPROBE5: procparam, eboot TLS, module table, bindings (link_modules.py). */
-        procparam=read64(f);
-        for (int i=0;i<4;++i) main_tls[i]=read64(f);
-        module_count=read64(f);
-        if (!module_count || module_count>sizeof(modules)/sizeof(*modules)) fail("invalid module count");
-        for (uint64_t m=0;m<module_count;++m) {
-            LinkedModule *x=&modules[m];
-            x->base=read64(f); x->size=read64(f); x->init=read64(f); x->tls_address=read64(f);
-            x->tls_memsz=read64(f); x->tls_filesz=read64(f); x->tls_module=read64(f);
-        }
-        nb=read64(f);
-    } else if (linked) {
-        LinkedModule *x=&modules[0];
-        module_count=1;
-        x->base=read64(f); x->size=read64(f); x->init=read64(f);
-        x->tls_address=read64(f); x->tls_memsz=read64(f); x->tls_filesz=read64(f); x->tls_module=2; nb=read64(f);
-        procparam=read64(f);
-        if (!memcmp(magic,"BBPROBE4",8)) for (int i=0;i<4;++i) main_tls[i]=read64(f);
-    }
-    if (linked) {
-        if (main_tls[1]>main_tls[2] || main_tls[2]>1024*1024 || main_tls[0]>size ||
-            main_tls[1]>size-main_tls[0] || (main_tls[3] & (main_tls[3]-1)) || main_tls[3]>4096)
-            fail("invalid eboot TLS metadata");
-        for (uint64_t m=0;m<module_count;++m) {
-            LinkedModule *x=&modules[m];
-            if (x->base>=size || !x->size || x->size>size-x->base || x->init<x->base || x->init-x->base>=x->size ||
-                (x->tls_module && (x->tls_address>=size || x->tls_memsz>size-x->tls_address || x->tls_memsz>1024*1024 ||
-                                   x->tls_filesz>x->tls_memsz || x->tls_module<2 || x->tls_module>7)))
-                fail("invalid linked module metadata");
-        }
-        if (nb>import_count) fail("invalid binding count");
-        for (uint64_t i=0;i<nb;++i) {
-            uint64_t index=read64(f),address=read64(f),kind=read64(f);
-            int inside=0;
-            for (uint64_t m=0;m<module_count;++m)
-                if (address>=modules[m].base && address-modules[m].base<modules[m].size) inside=1;
-            if (index>=import_count || !inside || (kind!=1 && kind!=2) || bindings[index]) fail("invalid native binding");
-            bindings[index]=address; binding_kinds[index]=kind;
-        }
-    }
-    Segment *segments = calloc(ns, sizeof(*segments));
-    Reloc *relocs = calloc(nr ? nr : 1, sizeof(*relocs));
-    names = calloc(import_count ? import_count : 1, sizeof(*names));
-    if (!segments || !relocs || !names) fail("allocation failed");
-    for (uint64_t i = 0; i < ns; ++i) {
-        segments[i].address = read64(f);
-        segments[i].size = read64(f);
-        segments[i].flags = read64(f);
-        if (segments[i].address > size || segments[i].size > size - segments[i].address ||
-            segments[i].address % page_size || segments[i].flags > 7) fail("bad segment");
-    }
-    if (fread(names, 128, import_count, f) != import_count) fail("truncated import names");
-    for (uint64_t i = 0; i < import_count; ++i)
-        if (!memchr(names[i], 0, 128)) fail("unterminated import name");
-    for (uint64_t i = 0; i < nr; ++i) {
-        relocs[i].target = read64(f);
-        relocs[i].kind = read64(f);
-        relocs[i].value = read64(f);
-        relocs[i].addend = read64(f);
-        if (!mapped(segments, ns, relocs[i].target, 8) || relocs[i].kind > 2 ||
-            (relocs[i].kind && relocs[i].value >= import_count) ||
-            (relocs[i].kind != 2 && relocs[i].addend) || relocs[i].addend >= page_size) fail("bad relocation");
-    }
-    for (uint64_t m=0;m<module_count;++m)
-        if (!mapped(segments,ns,modules[m].init,1) || (modules[m].tls_module && !mapped(segments,ns,modules[m].tls_address,modules[m].tls_memsz)))
-            fail("unmapped module metadata");
-    if (module_count && !mapped(segments,ns,procparam,64)) fail("unmapped procparam");
-    for (uint64_t i=0;i<import_count;++i) {
-        if (!bindings[i]) continue;
-        if (!mapped(segments,ns,bindings[i],1)) fail("unmapped native export");
-        if (binding_kinds[i]==1) {
-            int executable=0;
-            for (uint64_t s=0;s<ns;++s)
-                if ((segments[s].flags&1) && bindings[i]>=segments[s].address &&
-                    bindings[i]-segments[s].address<segments[s].size) executable=1;
-            if (!executable) fail("native function is not executable");
-        }
-    }
-    image = allocate(bb_round_page(size));
-    if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
-    fclose(f);
+    bb_boot_load(&boot, argv[1], page_size, allocate, fail);
+    uint64_t size=boot.size, entry=boot.entry, ns=boot.segment_count, nr=boot.reloc_count;
+    uint64_t nb=boot.binding_count, procparam=boot.procparam;
+    const uint64_t *main_tls=boot.main_tls, *bindings=boot.bindings, *binding_kinds=boot.binding_kinds;
+    Segment *segments=boot.segments;
+    Reloc *relocs=boot.relocs;
+    const BbBootModule *modules=boot.modules;
+    uint64_t module_count=boot.module_count;
+    image=boot.image; names=boot.names; import_count=boot.import_count;
+    runtime_start(strict_imports ? 0 : boot.capabilities);
+    const int native_libc=boot.linked && !strict_imports && (boot.capabilities&1);
     if (!cpu_only) {
         char title[128]="Bloodborne", serial[16]="UNKNOWN", sfo[4096];
         uint32_t attributes=0;
@@ -690,7 +593,7 @@ static int probe_main(int argc, char **argv) {
             if (resolved) value = resolved + relocs[i].addend;
             else if (native_libc && bindings[relocs[i].value]) {
                 uint64_t address=bindings[relocs[i].value];
-                if (binding_kinds[relocs[i].value]!=relocs[i].kind || !mapped(segments,ns,address,relocs[i].addend+1)) fail("native export kind/range mismatch");
+                if (binding_kinds[relocs[i].value]!=relocs[i].kind || !bb_boot_mapped(segments,ns,address,relocs[i].addend+1)) fail("native export kind/range mismatch");
                 value=(uintptr_t)image+address+relocs[i].addend;
             } else if (listed && !listed[relocs[i].value]) {
                 listed[relocs[i].value] = 1;

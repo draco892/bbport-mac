@@ -1,5 +1,8 @@
 #include "state_regions.h"
 
+uint64_t bb_regions_thread_pointer(const BbGuestRegions *table) { return table->thread_pointer; }
+uint64_t *bb_regions_ymm_high(BbGuestRegions *table, unsigned reg) { return table->ymm_high[reg]; }
+
 static int valid(const BbGuestMemory *region, uint64_t limit) {
     return region->byte_size <= limit &&
            region->guest_base <= UINT64_MAX - region->byte_size &&
@@ -18,12 +21,14 @@ int bb_regions_prepare(BbGuestRegions *table, BbGuestMemory *stack) {
     for (uint64_t i = 0; i < table->count; ++i)
         table->regions[i].fault_address = table->regions[i].fault_offset = 0;
     if (!valid(stack, 512)) return 0;
+    const uint64_t limit = table->region_limit ? table->region_limit : BB_MAX_REGION_BYTES;
+    if (limit > 512 * 1024 * 1024) return 0;
 
     uint64_t previous_end = 0;
     const uint64_t stack_end = stack->guest_base + stack->byte_size;
     for (uint64_t i = 0; i < table->count; ++i) {
         const BbGuestMemory *region = &table->regions[i];
-        if (!valid(region, BB_MAX_REGION_BYTES) || !region->byte_size ||
+        if (!valid(region, limit) || !region->byte_size ||
             region->guest_base < previous_end) return 0;
         previous_end = region->guest_base + region->byte_size;
         if (stack->byte_size && region->guest_base < stack_end &&

@@ -6,7 +6,8 @@ Every guest effective address is an i64 integer until bounds/permissions pass.
 from dataclasses import dataclass
 from cpu_state import OFFSETS
 from x86_address import decode_address
-from gpr_lift import decode as decode_gpr, lift as lift_gpr, DECLARATIONS, MAX_ENCODING_BYTES
+from gpr_lift import (decode as decode_gpr, lift as lift_gpr, lift_instructions,
+                      Instruction as ScalarInstruction, DECLARATIONS, MAX_ENCODING_BYTES)
 
 MEMORY_BYTES = 64
 MASK64 = (1 << 64) - 1
@@ -25,9 +26,11 @@ class Instruction:
     scale: int = 1
     displacement: int = 0
     rip_relative: bool = False
+    immediate: int | None = None
+    memory_source: bool = False
 
 
-def decode(code, *, allow_rip=False):
+def decode(code, *, allow_rip=False, extended=False):
     if not code or len(code) > 4096:
         raise ValueError('expected 1..4096 bytes')
     result, offset = [], 0
@@ -78,6 +81,13 @@ def decode(code, *, allow_rip=False):
             width = 8 if extension in (0xb6, 0xbe) else 16
         elif opcode == 0x63 and rex & 8 and not word:
             op, width = 'signed_load', 32
+        elif extended and opcode in (0x38, 0x39, 0x3a, 0x3b, 0x84, 0x85, 0x80, 0x81, 0x83,
+                                     0xc6, 0xc7, 0xf6, 0xf7):
+            op = ('store' if opcode in (0xc6, 0xc7) else
+                  'test' if opcode in (0x84, 0x85, 0xf6, 0xf7) else 'cmp')
+            width = 8 if opcode in (0x38, 0x3a, 0x84, 0x80, 0xc6, 0xf6) else destination_width
+            if width == 8 and (word or rex & 8):
+                raise ValueError('unsupported byte prefix')
         else:
             raise ValueError(f'unsupported memory encoding at {start:#x}')
         if offset >= len(code): raise ValueError('missing ModR/M')
@@ -85,14 +95,23 @@ def decode(code, *, allow_rip=False):
         offset += 1
         if modrm >> 6 == 3: raise ValueError('unsupported register form')
         reg = ((modrm >> 3) & 7) | ((rex & 4) << 1)
-        if width == destination_width == 8 and not rex and reg >= 4:
+        has_immediate = opcode in (0x80, 0x81, 0x83, 0xc6, 0xc7, 0xf6, 0xf7)
+        if has_immediate and reg != (7 if op == 'cmp' else 0):
+            raise ValueError('unsupported memory immediate extension')
+        if width == 8 and (destination_width == 8 or op in ('cmp', 'test')) and not has_immediate and not rex and reg >= 4:
             raise ValueError('AH/CH/DH/BH are outside this contract')
         address, offset = decode_address(code, offset, modrm, rex, allow_rip=allow_rip)
+        immediate = None
+        if has_immediate:
+            end = offset + (1 if opcode == 0x83 else min(width // 8, 4))
+            if end > len(code): raise ValueError('truncated memory immediate')
+            immediate = int.from_bytes(code[offset:end], 'little', signed=opcode == 0x83 or width == 64)
+            offset = end
         raw = code[start:offset]
         if len(raw) > 15: raise ValueError('instruction exceeds x86 size limit')
         result.append(Instruction(start, raw, op, reg, width, destination_width,
                                   address.base, address.index, address.scale, address.displacement,
-                                  address.rip_relative))
+                                  address.rip_relative, immediate, opcode in (0x3a, 0x3b)))
     raise ValueError('missing final RET')
 
 
@@ -107,11 +126,12 @@ def effective_address(insn, registers, *, rip=None):
     return (address + insn.displacement) & MASK64
 
 
-def lift(code, name, *, max_bytes=MEMORY_BYTES, allow_rip=False):
-    if type(max_bytes) is not int or not 1 <= max_bytes <= 1048576:
-        raise ValueError('bounded region limit must be 1..1048576 bytes')
+def lift(code, name, *, max_bytes=MEMORY_BYTES, allow_rip=False, extended=False):
+    limit = 512 * 1024 * 1024 if extended else 1048576
+    if type(max_bytes) is not int or not 1 <= max_bytes <= limit:
+        raise ValueError('invalid bounded region size')
     if not name.isascii() or not name.isidentifier(): raise ValueError('invalid function name')
-    instructions = decode(code, allow_rip=allow_rip)
+    instructions = decode(code, allow_rip=allow_rip, extended=extended)
     helpers = []
     lines = [f'define void @{name}(ptr %state, ptr %mapping) {{', 'entry:']
     serial = 0
@@ -183,8 +203,20 @@ def lift(code, name, *, max_bytes=MEMORY_BYTES, allow_rip=False):
         regptr, old = gpr(insn.reg)
         width = insn.width
         if insn.op == 'store':
-            value = old if width == 64 else emit(f'trunc i64 {old} to i{width}')
+            if insn.immediate is not None:
+                value = str(insn.immediate & ((1 << width) - 1))
+            else:
+                value = old if width == 64 else emit(f'trunc i64 {old} to i{width}')
             lines.append(f'  store i{width} {value}, ptr {host}, align 1')
+        elif insn.op in ('cmp', 'test'):
+            value = emit(f'load i{width}, ptr {host}, align 1')
+            if width < 64:
+                value = emit(f'zext i{width} {value} to i64')
+            helper = f'{name}_compare_{pc}'
+            operation = ScalarInstruction(insn.op, insn.reg, insn.reg, width, immediate=insn.immediate)
+            helpers.append(lift_instructions([operation], helper,
+                                             memory_operand='src' if insn.memory_source else 'dst'))
+            lines.append(f'  call void @{helper}(ptr %state, i64 {value})')
         else:
             value = emit(f'load i{width}, ptr {host}, align 1')
             dest = insn.destination_width

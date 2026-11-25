@@ -13,7 +13,7 @@ from pathlib import Path
 
 from cpu_state import (STATE, OFFSETS, ABI_VERSION, RFLAGS_INDEX, STATUS_INDEX,
                        XMM_INDEX, c_layout_checks)
-from gpr_lift import ARITHMETIC_FLAGS, DECLARATIONS, decode, defined_flags, lift
+from gpr_lift import ARITHMETIC_FLAGS, DECLARATIONS, ROTATE, SHIFT, decode, defined_flags, lift
 
 ROOT = Path(__file__).resolve().parent
 SEED = 0xbbf1a6
@@ -43,7 +43,35 @@ def model(code, record):
             b = insn.immediate & mask
         signed = lambda value: value - (1 << w) if value & sign else value
         if op == 'mov': result = b
+        elif op in ('movsx', 'movzx'):
+            source = 1 << insn.source_width
+            result = b & (source - 1)
+            if op == 'movsx' and result >= source // 2:
+                result = (result - source) & mask
         elif op == 'cmov': result = b if condition(insn.condition, flags) else a
+        elif op in SHIFT.values():
+            result = a
+            if b:
+                for _ in range(b):
+                    if op in ('rol', 'shl'):
+                        cf = bool(result & sign)
+                        result = ((result << 1) | (cf and op == 'rol')) & mask
+                    else:
+                        cf = bool(result & 1)
+                        top = (cf and op == 'ror') or (op == 'sar' and bool(result & sign))
+                        result = (result >> 1) | (sign if top else 0)
+                of = b == 1 and {
+                    'rol': bool(result & sign) != cf,
+                    'ror': bool(result & sign) != bool(result & (sign >> 1)),
+                    'shl': bool(result & sign) != cf,
+                    'shr': bool(a & sign),
+                    'sar': False,
+                }[op]
+                flags = (flags & ~0x801) | int(cf) | (int(of) << 11)
+                if op not in ROTATE:
+                    flags &= ~0xd4
+                    flags |= (int((result & 255).bit_count() % 2 == 0) << 2 |
+                              int(result == 0) << 6 | int(bool(result & sign)) << 7)
         else:
             previous_cf = flags & 1
             if op in ('inc', 'dec'): b = 1

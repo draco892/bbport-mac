@@ -117,7 +117,7 @@ static void check_return(const BbCpuState *before, const BbCpuState *after) {
 }
 
 int main(void) {
-    unsigned char local_data[16], local_stack[512];
+    unsigned char local_data[192], local_stack[512];
     unsigned char *data = local_data, *stack = local_stack;
     unsigned char name[sizeof module_name];
     memcpy(name, module_name, sizeof name);
@@ -144,7 +144,7 @@ int main(void) {
 #endif
 
     BbGuestMemory regions[] = {
-        {.bytes = data, .guest_base = DATA, .byte_size = 16, .permissions = 3},
+        {.bytes = data, .guest_base = DATA, .byte_size = sizeof local_data, .permissions = 3},
         {.bytes = slot, .guest_base = IMAGE_BASE + RIP_SLOT_OFFSET, .byte_size = sizeof slot, .permissions = 1},
         {.bytes = name, .guest_base = NAME_ADDRESS, .byte_size = sizeof name, .permissions = 1},
     };
@@ -176,6 +176,8 @@ int main(void) {
                get64(data + 8), get64(stack + 488), get64(stack + 496), get64(stack + 504));
     }
 
+    for (unsigned i = 32; i < 64; ++i) data[i] = (unsigned char)(3 * i);
+    memset(data + 64, 0xa5, sizeof local_data - 64);
     const BbCpuState before = input(0, RIP_CALL_OFFSET, stack);
     BbCpuState cpu = before;
 #ifdef ORIGINAL
@@ -186,12 +188,23 @@ int main(void) {
     check_return(&before, &cpu);
     assert(cpu.gpr[0] == (get64(slot) ^ UINT64_C(0xffffffffffffff80)));
     assert(cpu.gpr[8] == UINT64_C(0xfedcba97f6543210) && cpu.gpr[9] == UINT64_C(0x62fc962f));
+    assert(cpu.gpr[1] == 1 && cpu.gpr[2] == UINT64_MAX && cpu.gpr[6] == 2 &&
+           cpu.gpr[10] == UINT64_C(0x44332211) && cpu.gpr[11] == 0x11 && get64(data) == UINT64_MAX);
     assert(get64(stack + 496) == IMAGE_BASE + RIP_CALL_OFFSET + 13);
+    const unsigned char zero[24] = {0};
+    assert(!memcmp(data + 64, data + 32, 32) && !memcmp(data + 96, data + 32, 16));
+    assert(!memcmp(data + 112, zero, 16));
+    assert(!memcmp(data + 128, data + 32, 4) && data[132] == 0xa5);
+    assert(!memcmp(data + 160, data + 40, 8) && !memcmp(data + 168, zero, sizeof zero));
     printf("rip_call rax=%" PRIx64 " r8=%" PRIx64 " r9=%" PRIx64 " flags=%" PRIx64 " return=%" PRIx64 "\n",
            cpu.gpr[0], cpu.gpr[8], cpu.gpr[9], cpu.rflags & FLAGS, get64(stack + 496));
 
 #ifndef ORIGINAL
     /* Only AOT takes faulting paths here. The original success path uses real x86. */
+    cpu = input(0, RIP_CALL_OFFSET, stack);
+    cpu.gpr[7] = DATA + 1;
+    entry_rip_call(&cpu, &table, &stack_region);
+    assert(cpu.status == 8 && regions[0].fault_address == DATA + 33);
     put64(slot + 8, IMAGE_BASE + RIP_CALLEE_OFFSET + 1);
     cpu = input(0, RIP_CALL_OFFSET, stack);
     entry_rip_call(&cpu, &table, &stack_region);
@@ -200,6 +213,13 @@ int main(void) {
     cpu = input(0, RIP_CALL_OFFSET, stack);
     entry_rip_call(&cpu, &table, &stack_region);
     assert(cpu.status == 3 && regions[1].fault_address == IMAGE_BASE + RIP_SLOT_OFFSET);
+    regions[1].permissions = 1;
+    put64(slot + 8, IMAGE_BASE + RIP_CALLEE_OFFSET);
+    regions[0].permissions = 1;
+    cpu = input(0, RIP_CALL_OFFSET, stack);
+    entry_rip_call(&cpu, &table, &stack_region);
+    assert(cpu.status == 3 && regions[0].fault_address == DATA && get64(data) == UINT64_MAX);
+    regions[0].permissions = 3;
     memset(data, 0x5a, 16);
     force_error = 1;
     cpu = input(42, FUNCTION_OFFSET, stack);
@@ -212,7 +232,7 @@ int main(void) {
     calls = 0;
     entry_fios_cond(&cpu, &table, &stack_region);
     assert(cpu.status == 3 && cpu.rip == IMAGE_BASE + STORE_OFFSET && !calls && get64(data + 8) == 42);
-    fputs("ARM64 checked failures: 4\n", stderr);
+    fputs("ARM64 checked failures: 6\n", stderr);
 #endif
     return 0;
 }

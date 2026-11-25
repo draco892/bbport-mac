@@ -254,7 +254,7 @@ if (WIN32)
     file(GLOB BB_ATRAC9_SOURCES CONFIGURE_DEPENDS ../third_party/LibAtrac9/C/src/*.c)
     add_library(bbatrac9 STATIC ${BB_ATRAC9_SOURCES})
     target_compile_options(bbatrac9 PRIVATE -w)
-    add_executable(bb-probe ../src/probe.c ../src/vulkan_smoke.c ${BB_RUNTIME_SOURCES}
+    add_executable(bb-probe ../src/probe.c ../src/boot_image.c ../src/vulkan_smoke.c ${BB_RUNTIME_SOURCES}
         platform/win32/bb-probe.rc)
     set_target_properties(bb-probe PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
     target_include_directories(bb-probe PRIVATE .. ../src)
