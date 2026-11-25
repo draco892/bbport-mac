@@ -1,7 +1,9 @@
 #include "state_regions.h"
+#include <string.h>
 
 uint64_t bb_regions_thread_pointer(const BbGuestRegions *table) { return table->thread_pointer; }
 uint64_t *bb_regions_ymm_high(BbGuestRegions *table, unsigned reg) { return table->ymm_high[reg]; }
+void bb_regions_zero_ymm_high(BbGuestRegions *table) { memset(table->ymm_high, 0, sizeof table->ymm_high); }
 
 static int valid(const BbGuestMemory *region, uint64_t limit) {
     return region->byte_size <= limit &&

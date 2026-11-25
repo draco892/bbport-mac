@@ -135,6 +135,12 @@ def generated_sources(scratch, code, plt, name, call_pc, offsets):
         'c5 fb 10 97 00010000 '    # vmovsd xmm2, [rdi + 256]
         'c5 eb 58 97 00010000 '    # vaddsd xmm2, xmm2, [rdi + 256]
         'c5 fc 11 97 20010000 '    # vmovups [rdi + 288], ymm2
+        'c5 fd 6f 57 20 '          # vmovdqa ymm2, [rdi + 32]
+        'c5 fd 6f da '            # vmovdqa ymm3, ymm2
+        'c5 ed ef d3 '            # vpxor ymm2, ymm2, ymm3
+        'c5 e5 eb d2 '            # vpor ymm2, ymm3, ymm2
+        'c5 f8 77 '               # vzeroupper
+        'c5 fe 7f 97 40010000 '    # vmovdqu [rdi + 320], ymm2
         '48 83 f8 ff '            # cmp rax, -1
     )
     rip_call = move + call + scalar + b'\xc3'

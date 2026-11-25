@@ -21,5 +21,6 @@ int bb_regions_prepare(BbGuestRegions *, BbGuestMemory *);
 BbGuestMemory *bb_regions_select(BbGuestRegions *, BbGuestMemory *, uint64_t, int);
 uint64_t bb_regions_thread_pointer(const BbGuestRegions *);
 uint64_t *bb_regions_ymm_high(BbGuestRegions *, unsigned reg);
+void bb_regions_zero_ymm_high(BbGuestRegions *);
 
 #endif

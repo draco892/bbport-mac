@@ -1,7 +1,7 @@
 /* Bounded startup on ARM64, with an x86 guest engine and typed host imports. */
 #include "aot_startup.h"
 #include "aot_entries.h"
-#include "direct_memory_limits.h"
+#include "aot_memory.h"
 #include "runtime.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -24,10 +24,11 @@ typedef struct {
     BbGuestRegions *regions;
     uc_engine *engine;
     unsigned char *stack;
+    unsigned char scratch[4096];
     uint64_t heap_api, finalizers[MAX_FINALIZERS];
-    size_t finalizer_count, handle_count, aot_calls;
+    size_t finalizer_count, handle_count, aot_calls, avx_calls;
     HostHandle handles[MAX_HANDLES];
-    int invalid_import, pending_aot, exit_requested;
+    int invalid_import, pending_aot, pending_avx, exit_requested;
     uint32_t exit_code;
 } Startup;
 
@@ -39,7 +40,7 @@ static const int gpr[] = {
 };
 
 typedef enum {
-    UNSUPPORTED, PROC_PARAM, HEAP_API, INIT_ENV, ATEXIT, LIBC_EXIT, TLS_ADDR, DIRECT_SIZE,
+    UNSUPPORTED, PROC_PARAM, HEAP_API, INIT_ENV, ATEXIT, LIBC_EXIT, TLS_ADDR,
     MUTEX_INIT, MUTEX_LOCK, MUTEX_UNLOCK, MUTEX_ATTR_INIT, MUTEX_ATTR_TYPE, MUTEX_ATTR_DESTROY,
     COND_INIT, SELF, ATTR_INIT, ATTR_GET, ATTR_AFFINITY, ATTR_DESTROY,
     STACK_CANARY, NEED_LIBC,
@@ -56,7 +57,6 @@ static Import import_kind(const char *name) {
         {"aI+OeCz8xrQ#p#J", SELF}, {"nsYoNRywwNg#p#J", ATTR_INIT},
         {"x1X76arYMxU#p#J", ATTR_GET}, {"8+s5BzZjxSg#p#J", ATTR_AFFINITY},
         {"62KCwEMmzcM#p#J", ATTR_DESTROY},
-        {"pO96TwzOm5E#p#J", DIRECT_SIZE},
     };
     for (size_t i = 0; i < sizeof imports / sizeof *imports; ++i)
         if (!strcmp(name, imports[i].name)) return imports[i].kind;
@@ -67,7 +67,8 @@ static Import import_kind(const char *name) {
 
 int bb_aot_startup_import(const char *name, uint64_t kind) {
     Import import = import_kind(name);
-    return kind == 1 ? import > UNSUPPORTED && import < STACK_CANARY : import >= STACK_CANARY;
+    return kind == 1 ? (import > UNSUPPORTED && import < STACK_CANARY) || bb_aot_memory_import(name)
+                     : import >= STACK_CANARY;
 }
 
 static uint64_t read_reg(uc_engine *u, int reg) {
@@ -85,12 +86,18 @@ static int inside(uint64_t base, uint64_t size, uint64_t at, uint64_t length) {
 static unsigned char *span(const Startup *s, uint64_t address, uint64_t size, uint64_t permission) {
     if (inside(BB_AOT_STACK_BASE, STACK_SIZE, address, size))
         return s->stack + (address - BB_AOT_STACK_BASE);
+    if (inside(BB_AOT_SCRATCH_BASE, sizeof s->scratch, address, size))
+        return (unsigned char *)s->scratch + (address - BB_AOT_SCRATCH_BASE);
     for (uint64_t i = 0; i < s->regions->count; ++i) {
         const BbGuestMemory *r = &s->regions->regions[i];
         if ((r->permissions & permission) == permission && inside(r->guest_base, r->byte_size, address, size))
             return r->bytes + (address - r->guest_base);
     }
-    return NULL;
+    return bb_aot_memory_span(address, size, permission);
+}
+
+static unsigned char *memory_span(void *context, uint64_t address, uint64_t size, uint64_t permission) {
+    return span(context, address, size, permission);
 }
 
 static int executable(const Startup *s, uint64_t address) {
@@ -130,7 +137,6 @@ static HostHandle *handle(Startup *s, uint64_t token, HandleKind kind) {
 /* Guest addresses are checked through the shared mappings. Host handles never enter guest RAM. */
 static uint64_t dispatch(Startup *s, Import op, const char *name, uint64_t a, uint64_t b, uint64_t c) {
     if (op == PROC_PARAM) return AOT_BASE + s->boot->procparam;
-    if (op == DIRECT_SIZE) return bb_configured_direct_memory_size();
     if (op == HEAP_API) {
         if (!span(s, a, 8, 1)) { s->invalid_import = 1; return 0; }
         s->heap_api = a;
@@ -273,8 +279,13 @@ static void on_import(uc_engine *u, uint64_t address, uint32_t size, void *conte
         return;
     }
     const char *name = s->boot->names[idx];
-    const uint64_t value = dispatch(s, import_kind(name), name, read_reg(u, UC_X86_REG_RDI),
-                                   read_reg(u, UC_X86_REG_RSI), read_reg(u, UC_X86_REG_RDX));
+    const uint64_t args[] = {read_reg(u, UC_X86_REG_RDI), read_reg(u, UC_X86_REG_RSI),
+        read_reg(u, UC_X86_REG_RDX), read_reg(u, UC_X86_REG_RCX),
+        read_reg(u, UC_X86_REG_R8), read_reg(u, UC_X86_REG_R9)};
+    const BbMemoryImport mem = bb_aot_memory_import(name);
+    const uint64_t value = mem ? bb_aot_memory_call(mem, name, args, memory_span, s)
+        : dispatch(s, import_kind(name), name, args[0], args[1], args[2]);
+    if (bb_aot_memory_failed()) s->invalid_import = 1;
     if (s->invalid_import || s->exit_requested) uc_emu_stop(u);
     else write_reg(u, UC_X86_REG_RAX, value);
 }
@@ -309,6 +320,49 @@ static uc_err resume_translated_leaf(Startup *s) {
     return UC_ERR_OK;
 }
 
+static int resume_avx(Startup *s, uint64_t rip) {
+    for (size_t i = 0; i < sizeof aot_avx_entries / sizeof *aot_avx_entries; ++i) {
+        if (rip != AOT_BASE + aot_avx_entries[i].offset) continue;
+        const size_t size = aot_avx_entries[i].size;
+        unsigned char code[15];
+        if (uc_mem_read(s->engine, rip, code, size) || memcmp(code, aot_avx_entries[i].bytes, size))
+            return 0;
+        if (rip != AOT_BASE + AOT_AVX_PROBE && rip != AOT_BASE + AOT_AVX_PROBE + 4) {
+            if (!executable(s, rip) || !executable(s, rip + size - 1))
+                return 0;
+        }
+
+        BbCpuState cpu = {.rip = rip, .mxcsr = (uint32_t)read_reg(s->engine, UC_X86_REG_MXCSR)};
+        for (int reg = 0; reg < 16; ++reg) {
+            uint64_t lanes[4];
+            if (uc_reg_read(s->engine, UC_X86_REG_YMM0 + reg, lanes)) return 0;
+            memcpy(cpu.xmm[reg], lanes, sizeof cpu.xmm[reg]);
+            memcpy(s->regions->ymm_high[reg], lanes + 2, sizeof s->regions->ymm_high[reg]);
+        }
+        BbGuestMemory unused_stack = {0};
+        aot_avx_entries[i].entry(&cpu, s->regions, &unused_stack);
+        if (cpu.status || cpu.rip != rip + size) return 0;
+        for (int reg = 0; reg < 16; ++reg) {
+            uint64_t lanes[4];
+            memcpy(lanes, cpu.xmm[reg], sizeof cpu.xmm[reg]);
+            memcpy(lanes + 2, s->regions->ymm_high[reg], sizeof s->regions->ymm_high[reg]);
+            if (uc_reg_write(s->engine, UC_X86_REG_YMM0 + reg, lanes)) return 0;
+        }
+        write_reg(s->engine, UC_X86_REG_MXCSR, cpu.mxcsr);
+        write_reg(s->engine, UC_X86_REG_RIP, cpu.rip);
+        ++s->avx_calls;
+        return 1;
+    }
+    return 0;
+}
+
+static void on_avx(uc_engine *u, uint64_t address, uint32_t size, void *context) {
+    (void)address; (void)size;
+    Startup *s = context;
+    s->pending_avx = 1;
+    uc_emu_stop(u);
+}
+
 static uint64_t round_guest_page(uint64_t n) { return (n + 4095) & ~UINT64_C(4095); }
 
 static int map_guest(Startup *s) {
@@ -334,7 +388,7 @@ static int map_guest(Startup *s) {
     for (uint64_t i = 0; i < s->boot->import_count; ++i) {
         const uint64_t at = BB_AOT_IMPORT_BASE + i * BB_AOT_IMPORT_STRIDE;
         Import op = import_kind(s->boot->names[i]);
-        if (op == UNSUPPORTED) continue;
+        if (op == UNSUPPORTED && !bb_aot_memory_import(s->boot->names[i])) continue;
         if (op == INIT_ENV) {
             const uint64_t bound = AOT_BASE + s->boot->bindings[i];
             const unsigned char *entry = span(s, bound, 1, 1);
@@ -353,11 +407,33 @@ static int map_guest(Startup *s) {
     }
     const char path[] = "/app0/eboot.bin";
     const uint64_t params[] = {1, BB_AOT_SCRATCH_BASE + 64, 0};
-    return !uc_mem_map(u, BB_AOT_SCRATCH_BASE, 4096, UC_PROT_READ | UC_PROT_WRITE) &&
+    return !uc_mem_map_ptr(u, BB_AOT_SCRATCH_BASE, sizeof s->scratch,
+                           UC_PROT_READ | UC_PROT_WRITE, s->scratch) &&
            !uc_mem_write(u, BB_AOT_SCRATCH_BASE, params, sizeof params) &&
            !uc_mem_write(u, BB_AOT_SCRATCH_BASE + 64, path, sizeof path) &&
            !uc_mem_map(u, GUEST_FINALIZER, 4096, UC_PROT_READ | UC_PROT_EXEC) &&
-           !uc_mem_write(u, GUEST_FINALIZER, &ret, sizeof ret);
+           !uc_mem_write(u, GUEST_FINALIZER, &ret, sizeof ret) &&
+           !uc_mem_map(u, AOT_BASE + AOT_AVX_PROBE, 4096, UC_PROT_READ | UC_PROT_EXEC) &&
+           !uc_mem_write(u, AOT_BASE + AOT_AVX_PROBE, aot_avx_probe, sizeof aot_avx_probe);
+}
+
+static uc_err execute_guest(Startup *s, uint64_t pc, uint64_t end) {
+    s->pending_aot = 0;
+    const uint64_t deadline = runtime_wait_clock() + UINT64_C(5000000000);
+    const size_t initial_avx = s->avx_calls;
+    for (;;) {
+        const uint64_t now = runtime_wait_clock();
+        if (now >= deadline) return UC_ERR_RESOURCE;
+        s->pending_avx = 0;
+        if (pc == end) return UC_ERR_OK;
+        const uc_err error = uc_emu_start(s->engine, pc, end, (deadline - now) / 1000 + 1, 3000000);
+        if (!error && s->pending_aot) return resume_translated_leaf(s);
+        if ((!s->pending_avx && error != UC_ERR_INSN_INVALID) || s->avx_calls - initial_avx >= 128)
+            return error;
+        const uint64_t rip = read_reg(s->engine, UC_X86_REG_RIP);
+        if (!resume_avx(s, rip)) return error ? error : UC_ERR_INSN_INVALID;
+        pc = read_reg(s->engine, UC_X86_REG_RIP);
+    }
 }
 
 static uc_err call_guest(Startup *s, uint64_t pc, uint64_t arg0, uint64_t arg1) {
@@ -367,9 +443,7 @@ static uc_err call_guest(Startup *s, uint64_t pc, uint64_t arg0, uint64_t arg1) 
     write_reg(s->engine, UC_X86_REG_RDI, arg0);
     write_reg(s->engine, UC_X86_REG_RSI, arg1);
     write_reg(s->engine, UC_X86_REG_RDX, 0);
-    s->pending_aot = 0;
-    const uc_err error = uc_emu_start(s->engine, pc, AOT_RETURN, 5000000, 3000000);
-    return !error && s->pending_aot ? resume_translated_leaf(s) : error;
+    return execute_guest(s, pc, AOT_RETURN);
 }
 
 static int reached_return(const Startup *s) {
@@ -418,6 +492,44 @@ static int verify_finalizers(Startup *s) {
     return 1;
 }
 
+static int verify_avx_handoff(Startup *s) {
+    const uint64_t a[] = {1, 2, 3, 4};
+    const uint64_t b[] = {7, 4, 5, 6};
+    uint64_t result[4];
+    const size_t before = s->avx_calls;
+    if (uc_reg_write(s->engine, UC_X86_REG_YMM2, a) || uc_reg_write(s->engine, UC_X86_REG_YMM3, b) ||
+        call_guest(s, AOT_BASE + AOT_AVX_PROBE, 0, 0) || !reached_return(s) ||
+        uc_reg_read(s->engine, UC_X86_REG_YMM2, result) ||
+        result[0] != (a[0] ^ b[0]) || result[1] != (a[1] ^ b[1]) || result[2] || result[3])
+        return 0;
+    if (uc_reg_read(s->engine, UC_X86_REG_YMM3, result) ||
+        result[0] != b[0] || result[1] != b[1] || result[2] || result[3])
+        return 0;
+    const uint64_t zero[] = {0, 0, 0, 0};
+    if (uc_reg_write(s->engine, UC_X86_REG_YMM2, zero) || uc_reg_write(s->engine, UC_X86_REG_YMM3, zero))
+        return 0;
+    printf("AVX handoff verified: %zu translated instructions, %zu registered game sites\n",
+           s->avx_calls - before, sizeof aot_avx_entries / sizeof *aot_avx_entries - 2);
+    /* If the image contains the audited VXORPS xmm0,xmm0,xmm0 form, execute
+     * its original site as a single instruction against seeded YMM state. */
+    const unsigned char xor_self[] = {0xc5, 0xf8, 0x57, 0xc0};
+    for (size_t i = 2; i < sizeof aot_avx_entries / sizeof *aot_avx_entries; ++i) {
+        if (aot_avx_entries[i].size != sizeof xor_self ||
+            memcmp(aot_avx_entries[i].bytes, xor_self, sizeof xor_self))
+            continue;
+        const uint64_t pc = AOT_BASE + aot_avx_entries[i].offset;
+        const size_t count = s->avx_calls;
+        if (uc_reg_write(s->engine, UC_X86_REG_YMM0, a) || execute_guest(s, pc, pc + sizeof xor_self) ||
+            read_reg(s->engine, UC_X86_REG_RIP) != pc + sizeof xor_self ||
+            s->avx_calls != count + 1 || uc_reg_read(s->engine, UC_X86_REG_YMM0, result) ||
+            memcmp(result, zero, sizeof result))
+            return 0;
+        printf("Game AVX site verified at image offset %#" PRIx64 "\n", aot_avx_entries[i].offset);
+        break;
+    }
+    return 1;
+}
+
 static void report_stop(const Startup *s, const char *phase, uc_err error) {
     const uint64_t rip = read_reg(s->engine, UC_X86_REG_RIP);
     const uint64_t index = (rip - BB_AOT_IMPORT_BASE) / BB_AOT_IMPORT_STRIDE;
@@ -434,7 +546,8 @@ int bb_aot_startup(const BbBootImage *boot, BbGuestRegions *regions) {
     int result = 1;
     uc_hook import_hook, leaf_hook;
     if (s.stack == MAP_FAILED || uc_ctl_set_cpu_model(s.engine, UC_CPU_X86_HASWELL) ||
-        !map_guest(&s) || uc_hook_add(s.engine, &import_hook, UC_HOOK_CODE, on_import, &s,
+        !map_guest(&s) || !bb_aot_memory_attach(s.engine) ||
+        uc_hook_add(s.engine, &import_hook, UC_HOOK_CODE, on_import, &s,
                                      BB_AOT_IMPORT_BASE, BB_AOT_IMPORT_BASE + boot->import_count * BB_AOT_IMPORT_STRIDE - 1)) {
         fputs("ARM64 compatibility engine setup failed\n", stderr);
         goto done;
@@ -447,11 +560,19 @@ int bb_aot_startup(const BbBootImage *boot, BbGuestRegions *regions) {
         fputs("ARM64 translated libc leaf does not match the image\n", stderr);
         goto done;
     }
+    for (size_t i = 0; i < sizeof aot_avx_entries / sizeof *aot_avx_entries; ++i) {
+        const uint64_t address = AOT_BASE + aot_avx_entries[i].offset;
+        uc_hook avx_hook;
+        if (uc_hook_add(s.engine, &avx_hook, UC_HOOK_CODE, on_avx, &s, address, address)) {
+            fputs("ARM64 AVX hook setup failed\n", stderr);
+            goto done;
+        }
+    }
     write_reg(s.engine, UC_X86_REG_FS_BASE, regions->thread_pointer);
     write_reg(s.engine, UC_X86_REG_GS_BASE, regions->thread_pointer);
     write_reg(s.engine, UC_X86_REG_MXCSR, 0x1f80);
-    if (!verify_x87(&s) || !verify_finalizers(&s)) {
-        fputs("ARM64 compatibility instruction or callback probe failed\n", stderr);
+    if (!verify_x87(&s) || !verify_finalizers(&s) || !bb_aot_memory_verify() || !verify_avx_handoff(&s)) {
+        fputs("ARM64 compatibility instruction, callback or memory probe failed\n", stderr);
         goto done;
     }
 
@@ -480,14 +601,12 @@ int bb_aot_startup(const BbBootImage *boot, BbGuestRegions *regions) {
     }
 done:
     uc_close(s.engine);
+    bb_aot_memory_detach();
     if (s.stack != MAP_FAILED) munmap(s.stack, STACK_SIZE);
     return result;
 }
 
 /* The compatibility engine holds guest TLS and its own addressed mappings. */
-void *runtime_low_map(size_t size, int prot) {
-    void *p = mmap(NULL, size, prot, MAP_PRIVATE | MAP_ANON, -1, 0);
-    return p == MAP_FAILED ? NULL : p;
-}
+void runtime_guest_call_sites(uint64_t sites[3]) { sites[0] = sites[1] = sites[2] = 0; }
 void runtime_thread_keys_cleanup(void) {}
 void runtime_re_watch_now(uint64_t address) { (void)address; }

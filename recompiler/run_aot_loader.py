@@ -8,13 +8,47 @@ import subprocess
 import sys
 import tempfile
 import unicorn
+from capstone import Cs, CS_ARCH_X86, CS_MODE_64
+from audit_real_cpu import IMAGES, function_ranges
 
 from run_real_nonleaf import ROOT, MODULE_SHA, selection
-from state_stack_lift import CODE_BASE, lift
+from link_modules import module
+from state_stack_lift import CODE_BASE, decode_avx, lift
 
 TOP = ROOT.parent
 LIMIT = 512 * 1024 * 1024
 RETURN = CODE_BASE + LIMIT
+AVX_PROBE = LIMIT - 0x4000
+AVX_PROBE_CODE = bytes.fromhex('c5 ed ef d3 c5 f8 77 c3')  # vpxor ymm2,ymm2,ymm3; vzeroupper; ret
+
+
+def avx_fragments(game, modules):
+    # Start with an independent execution fixture and a few real sites per image.
+    sites = {AVX_PROBE: AVX_PROBE_CODE[:4], AVX_PROBE + 4: AVX_PROBE_CODE[4:7]}
+    cs = Cs(CS_ARCH_X86, CS_MODE_64)
+    for path, base in zip(IMAGES, [0, *(int(item['base'], 16) for item in modules)]):
+        parsed = module(game / path)
+        if base and not any(parsed['sha256'] == item['sha256'] and base == int(item['base'], 16)
+                            for item in modules):
+            raise ValueError(f'linked module changed while collecting AVX sites: {path}')
+        selected = set()
+        for address, size, offset in function_ranges(parsed['elf'], parsed['ph'])[0]:
+            if not 4 <= size <= 2048:
+                continue
+            for instruction in cs.disasm(parsed['elf'][offset:offset + size], address):
+                raw = bytes(instruction.bytes)
+                if raw[0] not in (0xc4, 0xc5) or instruction.mnemonic in selected:
+                    continue
+                fragment = decode_avx(raw, 0)
+                if (fragment and fragment.raw == raw and fragment.memory is None and
+                    fragment.op in ('avx_logic', 'avx_copy', 'avx_zero_upper')):
+                    sites[base + instruction.address] = raw
+                    selected.add(instruction.mnemonic)
+                if len(selected) == 4:
+                    break
+            if len(selected) == 4:
+                break
+    return sites
 
 
 def run(game, out, *, startup=False):
@@ -40,18 +74,31 @@ def run(game, out, *, startup=False):
             'tls_self': {'address': LIMIT - 0x1000, 'parts': ['65488b042500000000c3']},
             'libc_finish': {'address': libc_finish, 'parts': [libc_finish_code.hex()]},
         }
+        fragments = avx_fragments(game, modules)
+        spec.update({f'avx_{offset:x}': {'address': offset, 'parts': [raw.hex()], 'avx_fragment': True}
+                     for offset, raw in fragments.items()})
         ir, *_ = lift(spec, mapped=True, real=True, image_limit=LIMIT, root_return=RETURN, region_limit=LIMIT)
         (folder / 'fios.ll').write_text(ir)
         constants = dict(AOT_BASE=CODE_BASE, AOT_RETURN=RETURN, AOT_MODULE_BASE=base,
                          AOT_OFFSET=entry, AOT_PLT=target, AOT_GOT=base + offsets['GOT_OFFSET'],
-                         AOT_LIBC_FINISH=libc_finish)
+                         AOT_LIBC_FINISH=libc_finish, AOT_AVX_PROBE=AVX_PROBE)
         header = [f'#define {key} UINT64_C({value})' for key, value in constants.items()]
         header += ['#define AOT_COND_NAME "2Tb92quprl0#p#J"',
                    'extern void entry_fios_cond(BbCpuState *, BbGuestRegions *, BbGuestMemory *);',
                    'extern void entry_tls_self(BbCpuState *, BbGuestRegions *, BbGuestMemory *);',
                    'extern void entry_libc_finish(BbCpuState *, BbGuestRegions *, BbGuestMemory *);']
-        for label, data in (('body', code), ('plt', plt), ('name', name), ('libc_finish', libc_finish_code)):
+        for label, data in (('body', code), ('plt', plt), ('name', name), ('libc_finish', libc_finish_code),
+                            ('avx_probe', AVX_PROBE_CODE)):
             header.append(f'static const unsigned char aot_{label}[] = {{' + ', '.join(map(str, data)) + '};')
+        header.extend(f'extern void entry_avx_{offset:x}(BbCpuState *, BbGuestRegions *, BbGuestMemory *);'
+                      for offset in fragments)
+        header += ['static const struct { uint64_t offset; uint8_t size, bytes[15];',
+                   '    void (*entry)(BbCpuState *, BbGuestRegions *, BbGuestMemory *);',
+                   '} aot_avx_entries[] = {']
+        for offset, raw in fragments.items():
+            code_bytes = ', '.join(map(str, raw))
+            header.append(f'    {{ {offset}, {len(raw)}, {{ {code_bytes} }}, entry_avx_{offset:x} }},')
+        header += ['};']
         (folder / 'aot_entries.h').write_text('\n'.join(header) + '\n')
         subprocess.run(['clang', '-arch', 'arm64', '-O2', '-Wno-override-module',
                         '-c', folder / 'fios.ll', '-o', folder / 'fios.o'], check=True, timeout=60)
@@ -61,8 +108,9 @@ def run(game, out, *, startup=False):
                         '-Wno-ignored-attributes', '-DBB_LOW_HEAP_IMPL', '-I', TOP / 'src',
                         '-I', unicorn_root / 'include',
                         '-I', ROOT, '-I', folder, TOP / 'src/aot_loader.c', TOP / 'src/boot_image.c',
-                        TOP / 'src/aot_startup.c', ROOT / 'state_regions.c',
+                        TOP / 'src/aot_startup.c', TOP / 'src/aot_memory.c', ROOT / 'state_regions.c',
                         TOP / 'src/runtime_mutex.c', TOP / 'src/runtime_thread.c',
+                        TOP / 'src/runtime_memory.c', TOP / 'src/runtime_imports.c',
                         folder / 'fios.o', unicorn_root / 'lib/libunicorn.a', '-lm',
                         '-o', binary], check=True, timeout=60)
         arch = subprocess.check_output(['lipo', '-archs', binary], text=True, timeout=60).strip()
@@ -78,7 +126,9 @@ def run(game, out, *, startup=False):
             (out / 'startup.log').write_text(result.stdout + result.stderr)
             print(result.stdout, end='')
             checkpoints = ('Module 0 initializer returned 0', 'Module 1 initializer returned 0',
-                           'Translated module tail calls: 1', 'Entering eboot on ARM64')
+                           'Translated module tail calls: 1', 'Entering eboot on ARM64',
+                           'Direct-memory probe verified aliases, protection, unmap and release',
+                           'AVX handoff verified')
             if result.returncode not in (0, 2) or not all(line in result.stdout for line in checkpoints):
                 raise ValueError(f'ARM64 startup did not reach its checkpoints; see {out / "startup.log"}')
         for name in ('bb-probe-aot', 'boot-linked.bin'):

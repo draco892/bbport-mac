@@ -117,7 +117,7 @@ static void check_return(const BbCpuState *before, const BbCpuState *after) {
 }
 
 int main(void) {
-    unsigned char local_data[320], local_stack[512];
+    unsigned char local_data[352], local_stack[512];
     unsigned char *data = local_data, *stack = local_stack;
     unsigned char name[sizeof module_name];
     memcpy(name, module_name, sizeof name);
@@ -202,6 +202,7 @@ int main(void) {
     assert(!memcmp(data + 192, doubled, sizeof doubled));
     assert(!memcmp(data + 224, packed, sizeof packed));
     assert(get64(data + 288) == UINT64_C(0x4020000000000000) && !memcmp(data + 296, zero, sizeof zero));
+    assert(!memcmp(data + 320, packed, 16) && !memcmp(data + 336, zero, 16));
     printf("rip_call rax=%" PRIx64 " r8=%" PRIx64 " r9=%" PRIx64 " flags=%" PRIx64 " return=%" PRIx64 "\n",
            cpu.gpr[0], cpu.gpr[8], cpu.gpr[9], cpu.rflags & FLAGS, get64(stack + 496));
 

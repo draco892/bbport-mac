@@ -104,10 +104,14 @@ byte comparison. This is correctness evidence for the stated subset only.
   they read or clear.
 - [x] AOT AVX ADD/SUB/MUL/DIV with masked guest FP exceptions and Rosetta
   comparisons for packed single-precision arithmetic and scalar VADDSD.
+- [x] AVX packed logic, VEX register moves, VMOVDQA/VMOVDQU and VZEROUPPER,
+  with an ARM64 handoff for registered register-only instruction sites.
 - [x] Native ARM64 loading of the standard linked image, initial TLS and dispatch
   to one translated module entry with a registered runtime import.
 - [x] Native hybrid startup runs both real module initializers and enters eboot.
   Unicorn executes uncovered paths, with a verified AOT handoff in libc.
+- [x] The ARM64 startup uses the existing direct-memory allocator and mirrors
+  mapping, protection and unmapping changes into the CPU engine.
 - [ ] General SIMD/FP coverage and integration with full guest state, including
   remaining instructions, registers, conversions/comparisons and unmasked traps.
 - [ ] Atomics and an explicit strategy for x86 memory ordering on ARM64.
@@ -182,10 +186,18 @@ checks x87 arithmetic and LIFO finalizer callback execution. The boot log is
 `out/cpu-aot-loader/startup.log`. Invoking the binary directly with `--startup`
 returns 2 when it reaches an unimplemented import after entering eboot.
 
-Direct-memory allocation is the current startup boundary. The remaining AVX
-instructions need AOT coverage or another execution path where the installed
-Unicorn rejects them. The hybrid startup probe does not initialize the GPU or
-create guest threads.
+The startup executes the original direct-memory allocation and mapping for
+eboot, using the same runtime allocator as the x86 process and mirroring its
+changes into Unicorn. The memory probe covers physical aliases, read-only
+protection, unmap, and direct-memory release. The next missing import in the
+observed run is `scePthreadRwlockInit`.
+
+Registered register-only AVX sites are compiled ahead of time from the
+linked image's source modules. The runtime checks their exact bytes, exchanges
+YMM and MXCSR state, and resumes at the following guest instruction. The
+startup checks both a synthetic handoff and a real VXORPS site in isolation.
+Additional AVX forms and sites remain open. The hybrid startup probe does not
+initialize the GPU or create guest threads.
 
 The [register-only SIMD/FP increment](CPU_BACKEND_SIMD.md) now passes 53,040,000
 snapshots per AOT backend with zero differences, plus known-answer and rejection

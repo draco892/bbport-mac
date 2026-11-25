@@ -75,9 +75,6 @@ static __thread unsigned exclusive_depth;
  * GPU process's copy of guest memory. Queued under the lock and passed on in order once the
  * outermost writer has left it (the hook sends a message that may wait for the GPU process,
  * whose own calls into this file need the lock), before the operation returns to the guest. */
-typedef void (*MirrorHook)(int op, uintptr_t address, uint64_t size, uint64_t phys, int kind,
-                           int prot, int type, int shared);
-enum { MIRROR_MAP, MIRROR_UNMAP, MIRROR_PROTECT };
 typedef struct { int op; uintptr_t address; uint64_t size, phys; int kind, prot, type, shared; } MirrorEvent;
 static MirrorHook mirror_hook;
 static MirrorEvent *mirror_events; static size_t mirror_count, mirror_capacity;
@@ -105,6 +102,7 @@ static void read_unlock(void) { --read_depth; if (!exclusive_depth) pthread_rwlo
 int runtime_memory_lock_held(void) { return exclusive_depth || read_depth; }
 static Block blocks[LIMIT];
 static Vma *vmas; static size_t vma_count, vma_capacity;
+static uintptr_t guest_arena_base, guest_arena_end;
 static int pool_fd=-1;
 /* bbport: direct memory in GPU-visible system memory the GPU library allocates (dma-buf chunks,
  * BB_GUEST_GPU_MEMORY=1): the GPU reads the game's data in place instead of the CPU copying it
@@ -165,7 +163,8 @@ static int valid_alignment(uint64_t a) { return a >= PAGE && a <= POOL_SIZE && !
 static uint64_t align_up(uint64_t n, uint64_t a) { return (n+a-1) & ~(a-1); }
 static int host_prot(int prot) {
     /* GPU read/write bits (0x10/0x20) need host access for the future GPU backend. */
-    return ((prot & 0x11) ? PROT_READ : 0) | ((prot & 0x22) ? PROT_WRITE|PROT_READ : 0) | ((prot & 4) ? PROT_EXEC|PROT_READ : 0);
+    return ((prot & 0x11) ? PROT_READ : 0) | ((prot & 0x22) ? PROT_WRITE|PROT_READ : 0) |
+           ((prot & 4) ? PROT_READ | (guest_arena_end ? 0 : PROT_EXEC) : 0);
 }
 /* Direct memory occupies [0,POOL_SIZE) of the memfd, flexible memory [POOL_SIZE,+FLEX_SPAN). */
 static int pool(void) {
@@ -415,8 +414,11 @@ static int overlaps(uintptr_t start, uintptr_t end, int ignore_reserved) {
 }
 /* First-fit search in the PS4 user range, starting from the hint. */
 static uintptr_t find_free(uintptr_t hint, uint64_t size, uint64_t alignment) {
-    uintptr_t at=align_up(hint<USER_MIN ? USER_MIN : hint, alignment);
-    for (size_t i=vma_index(at); at+size<=USER_MAX; ++i) {
+    const uintptr_t first=guest_arena_end ? guest_arena_base : USER_MIN;
+    const uintptr_t end=guest_arena_end ? guest_arena_end : USER_MAX;
+    if (hint>=end || size>end-first) return 0;
+    uintptr_t at=align_up(hint<first ? first : hint, alignment);
+    for (size_t i=vma_index(at); at<=end-size; ++i) {
         if (i==vma_count || vmas[i].start>=at+size) return at;
         at=align_up(vmas[i].end,alignment);
     }
@@ -445,6 +447,8 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         /* bbport: never over the host's low memory (the game image, the runtime's maps and, on
          * macOS, the low heap), which MAP_FIXED would replace, nor past the guest's range. */
         if (address<BB_LOW_MAX || size>USER_MAX || address>USER_MAX-size) return INVALID;
+        if (guest_arena_end && (address<guest_arena_base || address>=guest_arena_end ||
+                                size>guest_arena_end-address)) return INVALID;
         if ((flags & MAP_NO_OVERWRITE) && overlaps(address,address+size,1)) return NO_MEMORY;
     } else {
         address=find_free(address,size,alignment);
@@ -582,7 +586,12 @@ static int32_t unmap_locked(uintptr_t start, uint64_t size) {
         }
     for (size_t i=vma_index(start); i<vma_count && vmas[i].start<end; ++i) {
         uintptr_t a=vmas[i].start>start ? vmas[i].start : start, b=vmas[i].end<end ? vmas[i].end : end;
-        if (munmap((void *)a,b-a)) return INVALID;
+        /* A translated guest owns the whole reserved arena. Keep unmapped guest
+         * pages reserved on the host so a later fixed map can safely reuse them. */
+        if (guest_arena_end) {
+            if (mmap((void *)a,b-a,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED|MAP_NORESERVE,-1,0)==MAP_FAILED)
+                return INVALID;
+        } else if (munmap((void *)a,b-a)) return INVALID;
     }
     drop_range(start,end);
     trap_forget(start,end);
@@ -828,6 +837,18 @@ void runtime_memory_reserve(void) {
 #ifdef _WIN32
     if (bb_reserve_arena(USER_MIN,USER_MAX)) exit(21);
 #endif
+}
+int runtime_memory_set_guest_arena(uintptr_t base, uint64_t size) {
+    if (base<BB_LOW_MAX || base>=USER_MAX || !size || size>USER_MAX-base ||
+        base%PAGE || size%PAGE) return -1;
+    write_lock();
+    const int available=!vma_count && !guest_arena_end;
+    if (available) {
+        guest_arena_base=base;
+        guest_arena_end=base+size;
+    }
+    write_unlock();
+    return available ? 0 : -1;
 }
 void *runtime_low_map(size_t size, int prot) {
 #ifdef _WIN32

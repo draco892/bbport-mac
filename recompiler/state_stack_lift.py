@@ -15,6 +15,10 @@ DATA_BYTES, STACK_BYTES = 64, 512
 HOST_IMPORT = 0x10010
 STEP_LIMIT = 4096
 MASK64 = (1 << 64) - 1
+AVX_FP = (0x58, 0x5c, 0x59, 0x5e)
+AVX_LOGIC = ('and', 'andnot', 'or', 'xor')
+AVX_PACKED_LOGIC = (0xdb, 0xdf, 0xeb, 0xef)
+AVX_OPS = ('avx_load', 'avx_store', 'avx_fp', 'avx_logic', 'avx_copy', 'avx_zero_upper')
 
 
 @dataclass(frozen=True)
@@ -204,7 +208,9 @@ def decode(code, *, real=False):
 
 
 def decode_avx(code, pc):
-    """Selected VEX memory moves and floating-point arithmetic in map 0F."""
+    """VEX moves, arithmetic and packed bitwise operations in map 0F."""
+    if code[pc:pc + 3] == b'\xc5\xf8\x77':
+        return Instruction(pc, code[pc:pc + 3], 'avx_zero_upper')
     vex = code[pc]
     prefix = 2 if vex == 0xc5 else 3
     opcode = pc + prefix
@@ -218,29 +224,48 @@ def decode_avx(code, pc):
     form = code[opcode]
     modrm = code[opcode + 1]
     reg = ((modrm >> 3) & 7) | ((extension & 4) << 1)
-    if form in (0x58, 0x5c, 0x59, 0x5e):
-        scalar = pp > 1
+    rhs = (modrm & 7) | ((extension & 1) << 3)
+    width = 32 if control & 4 else 16
+    if form in AVX_FP or (pp <= 1 and 0x54 <= form <= 0x57) or (pp == 1 and form in AVX_PACKED_LOGIC):
+        arithmetic = form in AVX_FP
+        scalar = arithmetic and pp > 1
         if scalar and control & 4:
             return None
         address, end = None, opcode + 2
         if modrm >> 6 != 3:
             address, end = decode_address(code, end, modrm, extension, allow_rip=True)
-        return Instruction(pc, code[pc:end], 'avx_fp', reg=reg,
-                           amount=(0x58, 0x5c, 0x59, 0x5e).index(form), memory=address,
-                           vector_bytes=32 if control & 4 else 16,
-                           vector_lhs=(~control >> 3) & 15,
-                           vector_rhs=(modrm & 7) | ((extension & 1) << 3),
+        operation = (AVX_FP.index(form) if arithmetic else
+                     form - 0x54 if 0x54 <= form <= 0x57 else AVX_PACKED_LOGIC.index(form))
+        return Instruction(pc, code[pc:end], 'avx_fp' if arithmetic else 'avx_logic', reg=reg,
+                           amount=operation, memory=address, vector_bytes=width,
+                           vector_lhs=(~control >> 3) & 15, vector_rhs=rhs,
                            lane_bits=64 if pp & 1 else 32, scalar=scalar)
-    if (control & 0x78 != 0x78 or
-            form not in (0x10, 0x11, 0x28, 0x29) or modrm >> 6 == 3):
+    integer_move = form in (0x6f, 0x7f) and pp in (1, 2)
+    if not integer_move and form not in (0x10, 0x11, 0x28, 0x29):
         return None
-    if pp > 1 and (form not in (0x10, 0x11) or control & 4):
+    scalar = not integer_move and pp > 1
+    if scalar and (form not in (0x10, 0x11) or control & 4):
         return None
-    address, end = decode_address(code, opcode + 2, modrm, extension, allow_rip=True)
-    width = {2: 4, 3: 8}.get(pp, 32 if control & 4 else 16)
-    return Instruction(pc, code[pc:end], 'avx_store' if form & 1 else 'avx_load',
-                       reg=reg,
-                       amount=width if form in (0x28, 0x29) else 1, memory=address, vector_bytes=width)
+    end = opcode + 2
+    store = form in (0x11, 0x29, 0x7f)
+    if modrm >> 6 == 3:
+        dest, source = (rhs, reg) if store else (reg, rhs)
+        if scalar:
+            return Instruction(pc, code[pc:end], 'avx_copy', reg=dest, vector_bytes=16,
+                               vector_lhs=(~control >> 3) & 15, vector_rhs=source,
+                               lane_bits=64 if pp & 1 else 32, scalar=True)
+        if control & 0x78 == 0x78:
+            return Instruction(pc, code[pc:end], 'avx_copy', reg=dest, vector_bytes=width,
+                               vector_rhs=source)
+        return None
+    if control & 0x78 != 0x78:
+        return None
+    address, end = decode_address(code, end, modrm, extension, allow_rip=True)
+    if scalar:
+        width = 8 if pp & 1 else 4
+    aligned = form in (0x28, 0x29) or (integer_move and pp == 1)
+    return Instruction(pc, code[pc:end], 'avx_store' if store else 'avx_load',
+                       reg=reg, amount=width if aligned else 1, memory=address, vector_bytes=width)
 
 
 def decode_extended_memory(code, pc):
@@ -285,9 +310,16 @@ def analyze(specification, *, real=False, image_limit=0x10000):
         address = function['address']
         if type(address) is not int or address < 0 or address + len(function['code']) > image_limit:
             raise ValueError('function outside bounded code image')
-        if address in addresses: raise ValueError('duplicate function address')
-        addresses[address] = name
-        decoded[name] = decode(function['code'], real=real)
+        code = function['code']
+        if specification[name].get('avx_fragment'):
+            insn = decode_avx(code, 0) if real and code else None
+            if insn is None or insn.raw != code or insn.memory is not None:
+                raise ValueError('an AVX fragment must be one register-only instruction')
+            decoded[name] = [insn]
+        else:
+            if address in addresses: raise ValueError('duplicate function address')
+            addresses[address] = name
+            decoded[name] = decode(code, real=real)
     spans = sorted((f['address'], f['address'] + len(f['code'])) for f in functions.values())
     if any(b[0] < a[1] for a, b in zip(spans, spans[1:])): raise ValueError('overlapping functions')
     calls = {}
@@ -311,7 +343,8 @@ def analyze(specification, *, real=False, image_limit=0x10000):
             if insn.op == 'indirect':
                 targets = indirect.get(key)
                 if (not isinstance(targets, list) or not targets or
-                        any(not isinstance(x, str) or x not in functions for x in targets) or
+                        any(not isinstance(x, str) or x not in functions or specification[x].get('avx_fragment')
+                            for x in targets) or
                         len(set(targets)) != len(targets)):
                     raise ValueError('indirect CALL needs a unique, registered target set')
                 used_indirect.add(key)
@@ -324,7 +357,7 @@ def analyze(specification, *, real=False, image_limit=0x10000):
                     used_imports.add(key)
                 elif offset == HOST_IMPORT and key in callbacks:
                     target = callbacks[key]
-                    if not isinstance(target, str) or target not in functions:
+                    if not isinstance(target, str) or target not in addresses.values():
                         raise ValueError('callback must target a registered entry')
                     used_callbacks.add(key)
                     edges[name].append((target,))
@@ -488,8 +521,8 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                    'declare ptr @bb_regions_select(ptr, ptr, i64, i32)']
     if any(insn.op == 'tls_self' for body in decoded.values() for insn in body):
         module.append('declare i64 @bb_regions_thread_pointer(ptr)')
-    if any(insn.op in ('avx_load', 'avx_store', 'avx_fp') for body in decoded.values() for insn in body):
-        module.append('declare ptr @bb_regions_ymm_high(ptr, i32)')
+    if any(insn.op in AVX_OPS for body in decoded.values() for insn in body):
+        module += ['declare ptr @bb_regions_ymm_high(ptr, i32)', 'declare void @bb_regions_zero_ymm_high(ptr)']
     if any(insn.op in ('simd', 'avx_fp') for body in decoded.values() for insn in body):
         module.append(simd_declarations())
     if any(function.get('host_callbacks') for function in specification.values()):
@@ -622,14 +655,18 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                 helper = f'ss_{name}_simd_{insn.pc}'
                 module.append(lift_simd(insn.raw + b'\xc3', helper, integer_only=True))
                 lines.append(f'  call void @{helper}(ptr %state)')
-            elif insn.op == 'avx_fp':
-                mxptr = emit(f'getelementptr i8, ptr %state, i64 {OFFSETS["mxcsr"]}')
-                mx = emit(f'load i32, ptr {mxptr}, align 1')
-                masked = emit(f'and i32 {mx}, {0xffff0000 | 0x1f80}')
-                valid = emit(f'icmp eq i32 {masked}, 8064')
-                lines += [f'  br i1 {valid}, label %avx{insn.pc}, label %bad_mxcsr{insn.pc}',
-                          f'bad_mxcsr{insn.pc}:', f'  store i32 10, ptr {status}, align 1',
-                          '  ret void', f'avx{insn.pc}:']
+            elif insn.op == 'avx_zero_upper':
+                lines.append('  call void @bb_regions_zero_ymm_high(ptr %data)')
+            elif insn.op in ('avx_fp', 'avx_logic', 'avx_copy'):
+                arithmetic = insn.op == 'avx_fp'
+                if arithmetic:
+                    mxptr = emit(f'getelementptr i8, ptr %state, i64 {OFFSETS["mxcsr"]}')
+                    mx = emit(f'load i32, ptr {mxptr}, align 1')
+                    masked = emit(f'and i32 {mx}, {0xffff0000 | 0x1f80}')
+                    valid = emit(f'icmp eq i32 {masked}, 8064')
+                    lines += [f'  br i1 {valid}, label %avx{insn.pc}, label %bad_mxcsr{insn.pc}',
+                              f'bad_mxcsr{insn.pc}:', f'  store i32 10, ptr {status}, align 1',
+                              '  ret void', f'avx{insn.pc}:']
                 if insn.memory is not None:
                     address, mapping = locate(insn.memory, next_pc)
                     size = insn.lane_bits // 8 if insn.scalar else insn.vector_bytes
@@ -637,9 +674,20 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                 else:
                     right = xmm(insn.vector_rhs)
                 lane = insn.lane_bits
-                ty = f'<{128 // lane} x i{lane}>'
 
                 def emit_half(lhs, rhs, dest):
+                    if not arithmetic and not insn.scalar:
+                        value = emit(f'load i128, ptr {rhs}, align 1')
+                        if insn.op == 'avx_logic':
+                            a = emit(f'load i128, ptr {lhs}, align 1')
+                            op = AVX_LOGIC[insn.amount]
+                            if op == 'andnot':
+                                a = emit(f'xor i128 {a}, -1')
+                                op = 'and'
+                            value = emit(f'{op} i128 {a}, {value}')
+                        lines.append(f'  store i128 {value}, ptr {dest}, align 1')
+                        return
+                    ty = f'<{128 // lane} x i{lane}>'
                     a = emit(f'load {ty}, ptr {lhs}, align 1')
                     value = a
                     if insn.scalar:
@@ -647,9 +695,11 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                     else:
                         b = emit(f'load {ty}, ptr {rhs}, align 1')
                     for i in range(1 if insn.scalar else 128 // lane):
-                        ax = emit(f'extractelement {ty} {a}, i32 {i}')
                         bx = b if insn.scalar else emit(f'extractelement {ty} {b}, i32 {i}')
-                        item = emit(f'call i{lane} @bb_fp{lane}(i{lane} {ax}, i{lane} {bx}, i32 {insn.amount}, ptr {mxptr})')
+                        item = bx
+                        if arithmetic:
+                            ax = emit(f'extractelement {ty} {a}, i32 {i}')
+                            item = emit(f'call i{lane} @bb_fp{lane}(i{lane} {ax}, i{lane} {bx}, i32 {insn.amount}, ptr {mxptr})')
                         value = emit(f'insertelement {ty} {value}, i{lane} {item}, i32 {i}')
                     lines.append(f'  store {ty} {value}, ptr {dest}, align 1')
 
@@ -776,7 +826,10 @@ def lift(specification, *, mapped=False, real=False, image_limit=0x10000, root_r
                     write(4, value if insn.op == 'pop' and insn.reg == 4 else advanced)
                     if insn.op == 'leave': write(5, value)
                     elif insn.reg != 4: write(insn.reg, value)
-            if insn.op != 'ret': lines.append(f'  br label %guest{insn.pc + len(insn.raw)}')
+            if specification[name].get('avx_fragment'):
+                lines += [f'  store i64 {next_pc}, ptr {rip}, align 1', '  ret void']
+            elif insn.op != 'ret':
+                lines.append(f'  br label %guest{insn.pc + len(insn.raw)}')
         lines += ['exhausted:', f'  store i32 6, ptr {status}, align 1', '  ret void',
                   'halt:', '  ret void', '}']
         module.append('\n'.join(lines))

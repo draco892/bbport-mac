@@ -38,6 +38,13 @@ void runtime_memory_report(void);
 /* Reserves the guest's address range (Windows; probe.c, first thing). */
 void runtime_memory_reserve(void);
 int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
+int runtime_memory_vma_info(uintptr_t address, int *prot, int *type, uintptr_t *end);
+/* A guest CPU engine may restrict the runtime to a host range it reserved. */
+int runtime_memory_set_guest_arena(uintptr_t base, uint64_t size);
+enum { MIRROR_MAP, MIRROR_UNMAP, MIRROR_PROTECT };
+typedef void (*MirrorHook)(int op, uintptr_t address, uint64_t size, uint64_t phys,
+                           int kind, int prot, int type, int shared);
+void runtime_memory_set_mirror_hook(MirrorHook);
 /* The CPU is about to write the range outside guest code (a file read): tells the GPU side. */
 void runtime_memory_note_write(uintptr_t address, uint64_t size);
 void runtime_memory_note_cpu_write(uintptr_t address, uint64_t size);
